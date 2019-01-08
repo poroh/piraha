@@ -1,0 +1,17 @@
+{application, psip,
+ [{description, "An OTP application"},
+  {vsn, semver},
+  {registered, []},
+  {mod, { psip_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    ersip
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.

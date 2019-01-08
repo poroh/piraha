@@ -1,0 +1,17 @@
+{application, piraha,
+ [{description, "Piraha hunting group service"},
+  {vsn, semver},
+  {registered, []},
+  {mod, {piraha_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    psip
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, []},
+  {licenses, ["MIT"]},
+  {links, []}
+ ]}.
