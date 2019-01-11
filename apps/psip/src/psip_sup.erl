@@ -1,7 +1,11 @@
-%%%-------------------------------------------------------------------
-%% @doc psip top level supervisor.
-%% @end
-%%%-------------------------------------------------------------------
+%%
+%% Copyright (c) 2019 Dmitry Poroh
+%% All rights reserved.
+%% Distributed under the terms of the MIT License. See the LICENSE file.
+%%
+%% Piraha SIP Stack
+%% Application supervisor
+%%
 
 -module(psip_sup).
 
@@ -16,9 +20,18 @@
 -define(SERVER, ?MODULE).
 
 %%====================================================================
+%% Types
+%%====================================================================
+
+-type start_link_ret() :: {ok, pid()} |
+                          {error, {already_started, pid()}} |
+                          {error, term()}.
+
+%%====================================================================
 %% API functions
 %%====================================================================
 
+-spec start_link() -> start_link_ret().
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
@@ -26,13 +39,21 @@ start_link() ->
 %% Supervisor callbacks
 %%====================================================================
 
-%% Child :: #{id => Id, start => {M, F, A}}
-%% Optional keys are restart, shutdown, type, modules.
-%% Before OTP 18 tuples must be used to specify a child. e.g.
-%% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
+-spec init(term()) ->
+    {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}
+    | ignore.
 init([]) ->
-    {ok, { {one_for_all, 0, 1}, []} }.
+    SupFlags =
+        #{strategy  => one_for_one,
+          intensity => 1,
+          period    => 5
+         },
+    ChildSpecs =
+        [#{id       => psip_udp_port,
+           start    => {psip_udp_port, start_link, []},
+           type     => worker,
+           restart  => permanent
+          }
+        ],
+    {ok, {SupFlags, ChildSpecs}}.
 
-%%====================================================================
-%% Internal functions
-%%====================================================================
