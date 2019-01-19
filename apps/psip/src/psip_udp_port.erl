@@ -14,7 +14,7 @@
 
 %% API
 -export([start_link/0,
-         setup_handler/2
+         set_handler/1
         ]).
 
 %% gen_server
@@ -34,11 +34,10 @@
 %%% Types
 %%%===================================================================
 
--record(state, {local_ip   :: inet:ip_address(),
-                local_port :: inet:port_number(),
-                socket    :: gen_udp:socket(),
-                module    :: module() | undefined,
-                mod_state :: term()
+-record(state, {local_ip     :: inet:ip_address(),
+                local_port   :: inet:port_number(),
+                socket       :: gen_udp:socket(),
+                handler      :: psip_handler:handler() | undefined
                }).
 -type state() :: #state{}.
 -type start_link_ret() :: {ok, pid()} |
@@ -54,9 +53,9 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
--spec setup_handler(module(), term()) -> ok.
-setup_handler(Module, State) ->
-    gen_server:call(?SERVER, {set_handler, Module, State}).
+-spec set_handler(psip_handler:handler()) -> ok.
+set_handler(Handler) ->
+    gen_server:call(?SERVER, {set_handler, Handler}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -104,9 +103,8 @@ init([]) ->
             {ok, State}
     end.
 
-handle_call({set_handler, Module, ModState}, _From, State) ->
-    NewState = State#state{module = Module,
-                           mod_state = ModState},
+handle_call({set_handler, Handler}, _From, State) ->
+    NewState = State#state{handler = Handler},
     {reply, ok, NewState};
 handle_call(Request, _From, State) ->
     psip_log:error("psip udp port: unexpected call: ~p", [Request]),
@@ -184,17 +182,17 @@ process_side_effect({bad_message, Data, Error}, _State) ->
     psip_log:warning("psip udp port: bad message received: ~p~n~s", [Error, Data]);
 process_side_effect({new_request, Msg}, State) ->
     psip_log:debug("psip udp port: process new request", []),
-    case State#state.module of
+    case State#state.handler of
         undefined ->
             psip_log:warning("psip udp port: no handlers defined for requests", []),
             %% Send 503, expect that handler will appear
             unavailable_resp(Msg),
             ok;
-        Mod ->
-            case Mod:transp_request(Msg, State#state.mod_state) of
+        Handler ->
+            case psip_handler:transp_request(Msg, Handler) of
                 noreply -> ok;
-                {tranasaction, TransCallback} ->
-                    psip_trans:server_trans(Msg, TransCallback)
+                process_transaction ->
+                    psip_trans:process_server(Msg, Handler)
             end
     end;
 process_side_effect({new_response, _Msg}, _State) ->
