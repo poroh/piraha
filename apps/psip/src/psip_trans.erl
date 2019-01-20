@@ -215,7 +215,7 @@ process_se({set_timer, {Timeout, TimerEvent}}, _ReqSipMsg, _Handler) ->
     continue;
 process_se({clear_trans, Reason}, _ReqSipMsg, Handler) ->
     psip_log:debug("psip trans: transaction cleared: ~p", [Reason]),
-    psip_handler:transaction_stop(self(), Reason, Handler),
+    psip_handler:transaction_stop({trans, self()}, Reason, Handler),
     stop;
 process_se({send_request, _OutReq}, _ReqSipMsg, _Handler) ->
     %% TODO:

@@ -11,7 +11,8 @@
 
 -export([new/2,
          transp_request/2,
-         transaction/3
+         transaction/3,
+         transaction_stop/3
         ]).
 
 -export_type([handler/0,
@@ -44,6 +45,9 @@ transp_request(Msg, #handler{module = Mod, args = Args}) ->
     Mod:transp_request(Msg, Args).
 
 -spec transaction(psip_trans:trans(), ersip_sipmsg:sipmsg(), handler()) -> ok.
-transaction(TransPid, SipMsg, #handler{module = Mod, args = Args}) ->
-    Mod:transaction(TransPid, SipMsg, Args).
+transaction(Trans, SipMsg, #handler{module = Mod, args = Args}) ->
+    Mod:transaction(Trans, SipMsg, Args).
 
+-spec transaction_stop(psip_trans:trans(), term(), handler()) -> ok.
+transaction_stop(Trans, TransResult, #handler{module = Mod, args = Args}) ->
+    Mod:transaction_stop(Trans, TransResult, Args).

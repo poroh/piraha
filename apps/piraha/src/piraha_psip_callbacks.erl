@@ -11,7 +11,8 @@
 
 -export([setup/0]).
 -export([transp_request/2,
-         transaction/3
+         transaction/3,
+         transaction_stop/3
         ]).
 
 %%===================================================================
@@ -36,7 +37,7 @@ transp_request(_Msg, _) ->
 transaction(Trans, SipMsg, _) ->
     RURI = ersip_sipmsg:ruri(SipMsg),
     RURIIO = ersip_uri:assemble(RURI),
-    psip_log:debug("new request within transaction: ~s", [RURIIO]),
+    psip_log:debug("new request within transaction: ~p: ~s", [Trans, RURIIO]),
     case piraha_users:lookup(RURI) of
         {ok, Group} ->
             piraha_group:start_hunt(Trans, SipMsg, Group);
@@ -45,3 +46,8 @@ transaction(Trans, SipMsg, _) ->
             NotFoundResp = ersip_sipmsg:reply(404, SipMsg),
             psip_trans:server_response(NotFoundResp, Trans)
     end.
+
+-spec transaction_stop(psip_trans:trans(), ersip_sipmsg:sipmsg(), any()) -> ok.
+transaction_stop(Trans, Reason, _) ->
+    psip_log:debug("transaction ~p stopped with reason: ~p", [Trans, Reason]),
+    ok.
