@@ -32,8 +32,16 @@ setup() ->
 transp_request(_Msg, _) ->
     process_transaction.
 
--spec transaction(pid(), ersip_sipmsg:sipmsg(), any()) -> ok.
-transaction(_Pid, _SipMsg, _) ->
-    psip_log:debug("new request within transaction", []),
-    ok.
-
+-spec transaction(psip_trans:trans(), ersip_sipmsg:sipmsg(), any()) -> ok.
+transaction(Trans, SipMsg, _) ->
+    RURI = ersip_sipmsg:ruri(SipMsg),
+    RURIIO = ersip_uri:assemble(RURI),
+    psip_log:debug("new request within transaction: ~s", [RURIIO]),
+    case piraha_users:lookup(RURI) of
+        {ok, Group} ->
+            piraha_group:start_hunt(Trans, SipMsg, Group);
+        not_found ->
+            psip_log:warning("cannot find hunt group for URI: ~s", [RURIIO]),
+            NotFoundResp = ersip_sipmsg:reply(404, SipMsg),
+            psip_trans:server_response(NotFoundResp, Trans)
+    end.

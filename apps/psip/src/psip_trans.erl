@@ -12,7 +12,8 @@
 -behaviour(gen_server).
 
 -export([start_link/1,
-         process_server/2]).
+         server_process/2,
+         server_response/2]).
 
 %% gen_server
 -export([init/1,
@@ -21,6 +22,8 @@
          handle_info/2,
          terminate/2,
          code_change/3]).
+
+-export_type([trans/0]).
 
 %%===================================================================
 %% Types
@@ -36,6 +39,7 @@
 -type start_link_ret() :: {ok, pid()} |
                           {error, {already_started, pid()}} |
                           {error, term()}.
+-type trans() :: {trans, pid()}.
 
 %%===================================================================
 %% API
@@ -45,8 +49,8 @@
 start_link(Args) ->
     gen_server:start_link(?MODULE, Args, []).
 
--spec process_server(ersip_msg:message(), psip_handler:handler()) -> ok.
-process_server(Msg, Handler) ->
+-spec server_process(ersip_msg:message(), psip_handler:handler()) -> ok.
+server_process(Msg, Handler) ->
     case ersip_sipmsg:parse(Msg, all_required) of
         {ok, SipMsg} ->
             case find_server(SipMsg) of
@@ -64,6 +68,10 @@ process_server(Msg, Handler) ->
         {error, _} = Error ->
             psip_log:warning("failed to parse SIP message: ~p~n~s", [Error, ersip_msg:serialize(Msg)])
     end.
+
+-spec server_response(ersip_sipmsg:sipmsg(), trans()) -> ok.
+server_response(Resp, {trans, Pid}) ->
+    gen_server:cast(Pid, {send, Resp}).
 
 %%===================================================================
 %% gen_server callbacks
@@ -119,10 +127,40 @@ handle_cast({process_se, SE}, #state{handler = Handler, origmsg = SipMsg} = Stat
         stop ->
             {stop, normal, State}
     end;
+handle_cast({send, _} = Ev, #state{handler = Handler, origmsg = SipMsg, trans = Trans} = State) ->
+    psip_log:debug("psip trans: sending message", []),
+    {NewTrans, SE} = ersip_trans:event(Ev, Trans),
+    NewState = State#state{trans = NewTrans},
+    case process_se_list(SE, SipMsg, Handler) of
+        continue ->
+            {noreply, NewState};
+        stop ->
+            {stop, normal, NewState}
+    end;
+handle_cast({received, _} = Ev, #state{handler = Handler, origmsg = SipMsg, trans = Trans} = State) ->
+    psip_log:debug("psip trans: received message", []),
+    {NewTrans, SE} = ersip_trans:event(Ev, Trans),
+    NewState = State#state{trans = NewTrans},
+    case process_se_list(SE, SipMsg, Handler) of
+        continue ->
+            {noreply, NewState};
+        stop ->
+            {stop, normal, NewState}
+    end;
 handle_cast(Request, State) ->
     psip_log:error("psip trans: unexpected cast: ~p", [Request]),
     {noreply, State}.
 
+handle_info({event, TimerEvent}, #state{handler = Handler, origmsg = SipMsg, trans = Trans} = State) ->
+    psip_log:debug("psip trans: timer fired ~p", [TimerEvent]),
+    {NewTrans, SE} = ersip_trans:event(TimerEvent, Trans),
+    NewState = State#state{trans = NewTrans},
+    case process_se_list(SE, SipMsg, Handler) of
+        continue ->
+            {noreply, NewState};
+        stop ->
+            {stop, normal, NewState}
+    end;
 handle_info(Msg, State) ->
     psip_log:error("psip trans: unexpected info: ~p", [Msg]),
     {noreply, State}.
@@ -169,7 +207,7 @@ process_se_list([SE | Rest], OrigSipMsg, Handler) ->
                 ersip_sipmsg:sipmsg(),
                 psip_handler:handler()) -> continue | stop.
 process_se({tu_result, SipMsg}, _, Handler) ->
-    psip_handler:transaction(self(), SipMsg, Handler),
+    psip_handler:transaction({trans, self()}, SipMsg, Handler),
     continue;
 process_se({set_timer, {Timeout, TimerEvent}}, _ReqSipMsg, _Handler) ->
     psip_log:debug("psip trans: set timer on ~p ms: ~p", [Timeout, TimerEvent]),

@@ -43,7 +43,7 @@ new(Module, Args) ->
 transp_request(Msg, #handler{module = Mod, args = Args}) ->
     Mod:transp_request(Msg, Args).
 
--spec transaction(pid(), ersip_sipmsg:sipmsg(), handler()) -> ok.
+-spec transaction(psip_trans:trans(), ersip_sipmsg:sipmsg(), handler()) -> ok.
 transaction(TransPid, SipMsg, #handler{module = Mod, args = Args}) ->
     Mod:transaction(TransPid, SipMsg, Args).
 

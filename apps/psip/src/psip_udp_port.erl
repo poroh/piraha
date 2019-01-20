@@ -192,7 +192,7 @@ process_side_effect({new_request, Msg}, State) ->
             case psip_handler:transp_request(Msg, Handler) of
                 noreply -> ok;
                 process_transaction ->
-                    psip_trans:process_server(Msg, Handler)
+                    psip_trans:server_process(Msg, Handler)
             end
     end;
 process_side_effect({new_response, _Msg}, _State) ->
