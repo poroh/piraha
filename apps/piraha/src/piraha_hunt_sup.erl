@@ -1,18 +1,20 @@
-%%
-%% Copyright (c) 2019 Dmitry Poroh
-%% All rights reserved.
-%% Distributed under the terms of the MIT License. See the LICENSE file.
-%%
-%% Piraha
-%% Application supervisor
-%%
+%%%
+%%% Copyright (c) 2019 Dmitry Poroh
+%%% All rights reserved.
+%%% Distributed under the terms of the MIT License. See the LICENSE file.
+%%%
+%%% Piraha Logic
+%%% Hunting supervisor
+%%%
 
--module(piraha_sup).
+-module(piraha_hunt_sup).
 
 -behaviour(supervisor).
 
 %% API
--export([start_link/0]).
+-export([start_link/0,
+         start_child/1
+        ]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -26,6 +28,12 @@
 -type start_link_ret() :: {ok, pid()} |
                           {error, {already_started, pid()}} |
                           {error, term()}.
+-type startchild_err() :: 'already_present'
+			| {'already_started', Child :: child()} | term().
+-type startchild_ret() :: {'ok', Child :: child()}
+                        | {'ok', Child :: child(), Info :: term()}
+			| {'error', startchild_err()}.
+-type child() :: pid().
 
 %%====================================================================
 %% API functions
@@ -34,6 +42,10 @@
 -spec start_link() -> start_link_ret().
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+
+-spec start_child(term()) -> startchild_ret().
+start_child(Args) ->
+    supervisor:start_child(?SERVER, Args).
 
 %%====================================================================
 %% Supervisor callbacks
@@ -44,16 +56,17 @@ start_link() ->
     | ignore.
 init([]) ->
     SupFlags =
-        #{strategy  => one_for_one,
-          intensity => 1,
-          period    => 5
+        #{strategy  => simple_one_for_one,
+          intensity => 1000,
+          period    => 1
          },
     ChildSpecs =
-        [#{id       => piraha_hunt_sup,
-           start    => {piraha_hunt_sup, start_link, []},
-           type     => supervisor,
-           restart  => permanent
+        [#{id      => piraha_hunt,
+           start   => {piraha_hunt, start_link, []},
+           type    => worker,
+           restart => temporary
           }
         ],
     {ok, {SupFlags, ChildSpecs}}.
+
 

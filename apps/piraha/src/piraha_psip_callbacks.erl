@@ -40,7 +40,7 @@ transaction(Trans, SipMsg, _) ->
     psip_log:debug("new request within transaction: ~p: ~s", [Trans, RURIIO]),
     case piraha_users:lookup(RURI) of
         {ok, Group} ->
-            piraha_group:start_hunt(Trans, SipMsg, Group);
+            piraha_hunt:start(Trans, SipMsg, Group);
         not_found ->
             psip_log:warning("cannot find hunt group for URI: ~s", [RURIIO]),
             NotFoundResp = ersip_sipmsg:reply(404, SipMsg),
