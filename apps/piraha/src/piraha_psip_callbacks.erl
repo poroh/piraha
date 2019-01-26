@@ -12,7 +12,8 @@
 -export([setup/0]).
 -export([transp_request/2,
          transaction/3,
-         transaction_stop/3
+         transaction_stop/3,
+         uas_request/3
         ]).
 
 %%===================================================================
@@ -33,18 +34,23 @@ setup() ->
 transp_request(_Msg, _) ->
     process_transaction.
 
--spec transaction(psip_trans:trans(), ersip_sipmsg:sipmsg(), any()) -> ok.
-transaction(Trans, SipMsg, _) ->
-    RURI = ersip_sipmsg:ruri(SipMsg),
+-spec transaction(psip_trans:trans(), ersip_sipmsg:sipmsg(), any()) -> process_uas.
+transaction(Trans, _SipMsg, _) ->
+    psip_log:debug("new request within transaction: ~p: process as UAS", [Trans]),
+    process_uas.
+
+-spec uas_request(psip_uas:uas(), ersip_sipmsg:sipmsg(), any()) -> ok.
+uas_request(UAS, ReqSipMsg, _) ->
+    RURI = ersip_sipmsg:ruri(ReqSipMsg),
     RURIIO = ersip_uri:assemble(RURI),
-    psip_log:debug("new request within transaction: ~p: ~s", [Trans, RURIIO]),
+    psip_log:debug("new UAS request: ~s", [RURIIO]),
     case piraha_users:lookup(RURI) of
         {ok, Group} ->
-            piraha_hunt:start(Trans, SipMsg, Group);
+            piraha_hunt:start(UAS, ReqSipMsg, Group);
         not_found ->
             psip_log:warning("cannot find hunt group for URI: ~s", [RURIIO]),
-            NotFoundResp = ersip_sipmsg:reply(404, SipMsg),
-            psip_trans:server_response(NotFoundResp, Trans)
+            NotFoundResp = ersip_sipmsg:reply(404, ReqSipMsg),
+            psip_uas:response(NotFoundResp, UAS)
     end.
 
 -spec transaction_stop(psip_trans:trans(), ersip_sipmsg:sipmsg(), any()) -> ok.

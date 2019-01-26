@@ -25,11 +25,11 @@
 %% Types
 %%===================================================================
 
--record(state, {srv_trans   :: psip_trans:trans(),
+-record(state, {uas         :: psip_uas:uas(),
                 request     :: ersip_sipmsg:sipmsg(),
                 fwd_request :: ersip_sipmsg:sipmsg() | undefined,
                 group       :: piraha_group:group(),
-                clnt_trans  :: psip_trans:trans()
+                uac         :: psip_uac:uac()
                }).
 -type state() :: #state{}.
 
@@ -45,9 +45,9 @@
 start_link(Args) ->
     gen_server:start_link(?MODULE, Args, []).
 
--spec start(psip_trans:trans(), ersip_sipmsg:sipmsg(), piraha_group:group()) -> ok.
-start(ServerTrans, OrigSipMsg, Group) ->
-    Args = [ServerTrans, OrigSipMsg, Group],
+-spec start(psip_uas:uas(), ersip_sipmsg:sipmsg(), piraha_group:group()) -> ok.
+start(UAS, OrigSipMsg, Group) ->
+    Args = [UAS, OrigSipMsg, Group],
     case piraha_hunt_sup:start_child([Args]) of
         {ok, _} ->
             ok;
@@ -88,8 +88,8 @@ start(ServerTrans, OrigSipMsg, Group) ->
 
 
 
-init([ServerTrans, ReqSipMsg, Group]) ->
-    State = #state{srv_trans = ServerTrans,
+init([UAS, ReqSipMsg, Group]) ->
+    State = #state{uas = UAS,
                    request = ReqSipMsg,
                    group = Group},
     gen_server:cast(self(), start_hunt),
@@ -100,31 +100,22 @@ handle_call(Request, _From, State) ->
     {reply, {error, {unexpected_call, Request}}, State}.
 
 handle_cast(start_hunt, #state{request = Req} = State) ->
-    ProxyOptions  = proxy_options(),
-    ValidateOptions = #{},
-    Options = #{validate => ValidateOptions,
-                proxy    => ProxyOptions},
-    case ersip_proxy_common:request_validation(Req, Options) of
-        {ok, SipMsg1} ->
-            FwdReq = ersip_proxy_common:process_route_info(SipMsg1, ProxyOptions),
-            NewState = State#state{fwd_request = FwdReq},
-            gen_server:cast(self(), hunt_next),
-            {noreply, NewState};
-        {reply, Resp} ->
-            psip_trans:server_response(Resp, State#state.srv_trans)
-    end;
+    FwdReq = prepare_fwd_req(Req),
+    NewState = State#state{fwd_request = FwdReq},
+    psip_log:debug("piraha hunt: forward request template: ~n~s", [ersip_sipmsg:serialize(FwdReq)]),
+    gen_server:cast(self(), hunt_next),
+    {noreply, NewState};
 handle_cast(hunt_next, #state{} = State) ->
     case piraha_group:next(State#state.group) of
         not_found ->
             psip_log:warning("piraha hunt: cannot find next target: give up", []),
             NotFoundResp = ersip_sipmsg:reply(404, State#state.request),
-            psip_trans:server_response(NotFoundResp, State#state.srv_trans),
+            psip_uas:response(NotFoundResp, State#state.uas),
             {stop, normal, State};
         {ok, {DN, URI}, Group1} ->
             psip_log:info("piraha hunt: diversion to ~p ~p", [DN, URI]),
-            ProxyOptions = proxy_options(),
-            {FwdMsg, _} = ersip_proxy_common:forward_request(URI, State#state.fwd_request, ProxyOptions),
-            psip_trans:client_trans
+            SipMsgToSend = prepare_out_req(DN, URI, State#state.fwd_request),
+            psip_log:debug("piraha hunt: out message:~n~s", [ersip_sipmsg:serialize(SipMsgToSend)]),
             {noreply, State#state{group = Group1}}
     end;
 handle_cast(Request, State) ->
@@ -151,6 +142,61 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal implementation
 %%===================================================================
 
--spec proxy_options() -> ersip_proxy:options().
-proxy_options() ->
-    #{}.
+-spec prepare_fwd_req(ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
+prepare_fwd_req(SipMsg0) ->
+    SipMsg1 = remove_route_info(SipMsg0),
+    SipMsg2 = filter_allow(SipMsg1),
+    %% Remove supported from header because this is not our "supported".
+    SipMsg3 = ersip_sipmsg:remove(supported, SipMsg2),
+    SipMsg  = new_dialog_informaton(SipMsg3),
+    SipMsg.
+
+-spec remove_route_info(ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
+remove_route_info(SipMsg) ->
+    ersip_sipmsg:remove_list([<<"via">>, route, record_route], SipMsg).
+
+-spec filter_allow(ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
+filter_allow(SipMsg) ->
+    case ersip_sipmsg:find(allow, SipMsg) of
+        {ok, AllowHdr} ->
+            MethodSet = ersip_hdr_allow:to_method_set(AllowHdr),
+            NewMethodSet = ersip_method_set:intersection(ersip_method_set:invite_set(), MethodSet),
+            NewAllowHdr = ersip_hdr_allow:from_method_set(NewMethodSet),
+            ersip_sipmsg:set(allow, NewAllowHdr, SipMsg);
+        not_found ->
+            SipMsg;
+        {error, _} = Error ->
+            psip_log:warning("piraha hunt: ignore bad Allow header: ~p", [Error]),
+            ersip_sipmsg:remove(<<"allow">>, SipMsg)
+    end.
+
+-spec new_dialog_informaton(ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
+new_dialog_informaton(SipMsg0) ->
+    %% Generate new Call-ID:
+    CallId = ersip_hdr_callid:make(ersip_id:word(crypto:strong_rand_bytes(12))),
+    SipMsg1 = ersip_sipmsg:set(callid, CallId, SipMsg0),
+    %% Generate new From tag:
+    FromHdr0 = ersip_sipmsg:from(SipMsg1),
+    NewTag   = {tag, ersip_id:word(crypto:strong_rand_bytes(8))},
+    FromHdr  = ersip_hdr_fromto:set_tag(NewTag, FromHdr0),
+    SipMsg2  = ersip_sipmsg:set(from, FromHdr, SipMsg1),
+    %% Remove old Contact. New contact is placed after when target is
+    %% defined.
+    SipMsg3  = ersip_sipmsg:remove(contact, SipMsg2),
+    %% Remove old To header
+    SipMsg   = ersip_sipmsg:remove(to, SipMsg3),
+    SipMsg.
+
+
+-spec prepare_out_req(ersip_nameaddr:display_name(), ersip_uri:uri(), ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
+prepare_out_req(TargetDN, TargetUri, SipMsg0) ->
+    %% Create To:
+    ToHdr0  = ersip_hdr_fromto:new(),
+    ToHdr1  = ersip_hdr_fromto:set_uri(TargetUri, ToHdr0),
+    ToHdr   = ersip_hdr_fromto:set_display_name(TargetDN, ToHdr1),
+    SipMsg1 = ersip_sipmsg:set(to, ToHdr, SipMsg0),
+    %% Generate Contact:
+    URI = psip_udp_port:local_uri(),
+    Contact = ersip_hdr_contact:new(URI),
+    SipMsg  = ersip_sipmsg:set(contact, [Contact], SipMsg1),
+    SipMsg.

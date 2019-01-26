@@ -30,7 +30,8 @@
 %%===================================================================
 
 -record(state,
-        {trans :: ersip_trans:trans(),
+        {type    :: server | client,
+         trans   :: ersip_trans:trans(),
          handler :: psip_handler:handler(),
          origmsg :: ersip_sipmsg:sipmsg()
         }).
@@ -110,7 +111,8 @@ init([server, Handler, SipMsg]) ->
     gproc:add_local_name(TransId),
     psip_log:debug("psip trans: starting server transaction with id: ~p", [TransId]),
     gen_server:cast(self(), {process_se, TransSE}),
-    State = #state{trans   = Trans,
+    State = #state{type    = server,
+                   trans   = Trans,
                    handler = Handler,
                    origmsg = SipMsg
                   },
@@ -120,28 +122,28 @@ handle_call(Request, _From, State) ->
     psip_log:error("psip trans: unexpected call: ~p", [Request]),
     {reply, {error, {unexpected_call, Request}}, State}.
 
-handle_cast({process_se, SE}, #state{handler = Handler, origmsg = SipMsg} = State) ->
-    case process_se_list(SE, SipMsg, Handler) of
+handle_cast({process_se, SE}, #state{} = State) ->
+    case process_se_list(SE, State) of
         continue ->
             {noreply, State};
         stop ->
             {stop, normal, State}
     end;
-handle_cast({send, _} = Ev, #state{handler = Handler, origmsg = SipMsg, trans = Trans} = State) ->
+handle_cast({send, _} = Ev, #state{trans = Trans} = State) ->
     psip_log:debug("psip trans: sending message", []),
     {NewTrans, SE} = ersip_trans:event(Ev, Trans),
     NewState = State#state{trans = NewTrans},
-    case process_se_list(SE, SipMsg, Handler) of
+    case process_se_list(SE, State) of
         continue ->
             {noreply, NewState};
         stop ->
             {stop, normal, NewState}
     end;
-handle_cast({received, _} = Ev, #state{handler = Handler, origmsg = SipMsg, trans = Trans} = State) ->
+handle_cast({received, _} = Ev, #state{trans = Trans} = State) ->
     psip_log:debug("psip trans: received message", []),
     {NewTrans, SE} = ersip_trans:event(Ev, Trans),
     NewState = State#state{trans = NewTrans},
-    case process_se_list(SE, SipMsg, Handler) of
+    case process_se_list(SE, State) of
         continue ->
             {noreply, NewState};
         stop ->
@@ -151,11 +153,11 @@ handle_cast(Request, State) ->
     psip_log:error("psip trans: unexpected cast: ~p", [Request]),
     {noreply, State}.
 
-handle_info({event, TimerEvent}, #state{handler = Handler, origmsg = SipMsg, trans = Trans} = State) ->
+handle_info({event, TimerEvent}, #state{trans = Trans} = State) ->
     psip_log:debug("psip trans: timer fired ~p", [TimerEvent]),
     {NewTrans, SE} = ersip_trans:event(TimerEvent, Trans),
     NewState = State#state{trans = NewTrans},
-    case process_se_list(SE, SipMsg, Handler) of
+    case process_se_list(SE, State) of
         continue ->
             {noreply, NewState};
         stop ->
@@ -191,36 +193,40 @@ find_server(SipMsg) ->
             error
     end.
 
--spec process_se_list([ersip_trans_se:side_effect()],
-                      ersip_sipmsg:sipmsg(),
-                      psip_handler:handler()) -> continue | stop.
-process_se_list([], _OrigSipMsg, _Handler) ->
+-spec process_se_list([ersip_trans_se:side_effect()], state()) -> continue | stop.
+process_se_list([], #state{}) ->
     continue;
-process_se_list([SE | Rest], OrigSipMsg, Handler) ->
-    case process_se(SE, OrigSipMsg, Handler) of
+process_se_list([SE | Rest], #state{} = State) ->
+    case process_se(SE, State) of
         stop -> stop;
         continue ->
-            process_se_list(Rest, OrigSipMsg, Handler)
+            process_se_list(Rest, State)
     end.
 
--spec process_se(ersip_trans_se:side_effect(),
-                ersip_sipmsg:sipmsg(),
-                psip_handler:handler()) -> continue | stop.
-process_se({tu_result, SipMsg}, _, Handler) ->
-    psip_handler:transaction({trans, self()}, SipMsg, Handler),
+-spec process_se(ersip_trans_se:side_effect(), state()) -> continue | stop.
+process_se({tu_result, SipMsg}, #state{type = server, handler = Handler}) ->
+    case psip_handler:transaction(make_trans(), SipMsg, Handler) of
+        ok -> ok;
+        process_uas ->
+            psip_uas:process(make_trans(), SipMsg, Handler)
+    end,
     continue;
-process_se({set_timer, {Timeout, TimerEvent}}, _ReqSipMsg, _Handler) ->
+process_se({set_timer, {Timeout, TimerEvent}}, #state{}) ->
     psip_log:debug("psip trans: set timer on ~p ms: ~p", [Timeout, TimerEvent]),
     erlang:send_after(Timeout, self(), {event, TimerEvent}),
     continue;
-process_se({clear_trans, Reason}, _ReqSipMsg, Handler) ->
+process_se({clear_trans, Reason}, #state{handler = Handler}) ->
     psip_log:debug("psip trans: transaction cleared: ~p", [Reason]),
     psip_handler:transaction_stop({trans, self()}, Reason, Handler),
     stop;
-process_se({send_request, _OutReq}, _ReqSipMsg, _Handler) ->
+process_se({send_request, _OutReq}, #state{}) ->
     %% TODO:
     continue;
-process_se({send_response, Response}, ReqSipMsg, _Handler) ->
+process_se({send_response, Response}, #state{origmsg = ReqSipMsg}) ->
     psip_log:debug("psip trans: sending response", []),
     psip_source:send_response(Response, ReqSipMsg),
     continue.
+
+-spec make_trans() -> trans().
+make_trans() ->
+    {trans, self()}.

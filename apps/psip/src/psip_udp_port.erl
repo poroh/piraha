@@ -14,7 +14,8 @@
 
 %% API
 -export([start_link/0,
-         set_handler/1
+         set_handler/1,
+         local_uri/0
         ]).
 
 %% gen_server
@@ -56,6 +57,10 @@ start_link() ->
 -spec set_handler(psip_handler:handler()) -> ok.
 set_handler(Handler) ->
     gen_server:call(?SERVER, {set_handler, Handler}).
+
+-spec local_uri() -> ersip_uri:uri().
+local_uri() ->
+    gen_server:call(?SERVER, local_uri).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -106,6 +111,10 @@ init([]) ->
 handle_call({set_handler, Handler}, _From, State) ->
     NewState = State#state{handler = Handler},
     {reply, ok, NewState};
+handle_call(local_uri, _From, #state{local_ip = LocalIP, local_port = LocalPort} = State) ->
+    URI = ersip_uri:make([{host, ersip_host:make(LocalIP)},
+                          {port, LocalPort}]),
+    {reply, URI, State};
 handle_call(Request, _From, State) ->
     psip_log:error("psip udp port: unexpected call: ~p", [Request]),
     {reply, {error, {unexpected_call, Request}}, State}.
