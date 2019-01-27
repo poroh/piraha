@@ -18,9 +18,10 @@
 -spec lookup(ersip_uri:uri()) -> {ok, piraha_group:group()} | not_found.
 lookup(_URI) ->
     Group0 = piraha_group:new({display_name, <<"\"els123 els123\"">>},
-                             ersip_uri:make(<<"sip:+299381819@test.iserfik.gl;user=phone">>)),
+                              ersip_uri:make(<<"sip:+299381819@test.iserfik.gl;user=phone">>)),
     Group1 = piraha_group:add({display_name, []},
                               ersip_uri:make(<<"sip:341000@test.iserfik.gl;user=phone">>),
+                              ersip_uri:make(<<"sip:127.0.0.1:5092">>),
                               Group0),
     {ok, Group1}.
 

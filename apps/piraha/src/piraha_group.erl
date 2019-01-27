@@ -10,7 +10,7 @@
 -module(piraha_group).
 
 -export([new/2,
-         add/3,
+         add/4,
          next/1
         ]).
 
@@ -23,7 +23,7 @@
 -record(group, {owner        :: user(),
                 members = [] :: [user()]
                }).
--type user()   :: {ersip_nameaddr:display_name(), ersip_uri:uri()}.
+-type user()   :: {ersip_nameaddr:display_name(), ersip_uri:uri(), ersip_uri:uri() | undefined}.
 -type group()  :: #group{}.
 
 %%===================================================================
@@ -32,11 +32,11 @@
 
 -spec new(ersip_nameaddr:display_name(), ersip_uri:uri()) -> group().
 new(OwnerDisplayName, OwnerURI) ->
-    #group{owner = make_user(OwnerDisplayName, OwnerURI)}.
+    #group{owner = make_user(OwnerDisplayName, OwnerURI, undefined)}.
 
--spec add(ersip_nameaddr:display_name(), ersip_uri:uri(), group()) -> group().
-add(DisplayName, URI, #group{} = Group) ->
-    Group#group{members = Group#group.members ++ [make_user(DisplayName, URI)]}.
+-spec add(ersip_nameaddr:display_name(), ersip_uri:uri(), ersip_uri:uri(), group()) -> group().
+add(DisplayName, URI, NextHop, #group{} = Group) ->
+    Group#group{members = Group#group.members ++ [make_user(DisplayName, URI, NextHop)]}.
 
 -spec next(group()) -> not_found | {ok, user(), group()}.
 next(#group{members = []}) ->
@@ -48,6 +48,6 @@ next(#group{members = [Next | Rest]} = Group) ->
 %% Internal implementation
 %%===================================================================
 
--spec make_user(ersip_nameaddr:display_name(), ersip_uri:uri()) -> user().
-make_user(DN, URI) ->
-    {DN, URI}.
+-spec make_user(ersip_nameaddr:display_name(), ersip_uri:uri(), ersip_uri:uri() | undefined) -> user().
+make_user(DN, URI, Nexthop) ->
+    {DN, URI, Nexthop}.

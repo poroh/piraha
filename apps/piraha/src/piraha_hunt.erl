@@ -112,10 +112,15 @@ handle_cast(hunt_next, #state{} = State) ->
             NotFoundResp = ersip_sipmsg:reply(404, State#state.request),
             psip_uas:response(NotFoundResp, State#state.uas),
             {stop, normal, State};
-        {ok, {DN, URI}, Group1} ->
-            psip_log:info("piraha hunt: diversion to ~p ~p", [DN, URI]),
+        {ok, {DN, URI, Nexthop}, Group1} ->
+            psip_log:info("piraha hunt: diversion to ~p ~p via ~s", [DN, URI, ersip_uri:assemble(Nexthop)]),
             SipMsgToSend = prepare_out_req(DN, URI, State#state.fwd_request),
             psip_log:debug("piraha hunt: out message:~n~s", [ersip_sipmsg:serialize(SipMsgToSend)]),
+            Self = self(),
+            ResultFun = fun(timeout) -> gen_server:cast(Self, timeout);
+                           (Resp)    -> gen_server:cast(Self, {response, Resp})
+                        end,
+            psip_uac:request(SipMsgToSend, Nexthop, ResultFun),
             {noreply, State#state{group = Group1}}
     end;
 handle_cast(Request, State) ->
@@ -177,7 +182,7 @@ new_dialog_informaton(SipMsg0) ->
     SipMsg1 = ersip_sipmsg:set(callid, CallId, SipMsg0),
     %% Generate new From tag:
     FromHdr0 = ersip_sipmsg:from(SipMsg1),
-    NewTag   = {tag, ersip_id:word(crypto:strong_rand_bytes(8))},
+    NewTag   = {tag, ersip_id:token(crypto:strong_rand_bytes(6))},
     FromHdr  = ersip_hdr_fromto:set_tag(NewTag, FromHdr0),
     SipMsg2  = ersip_sipmsg:set(from, FromHdr, SipMsg1),
     %% Remove old Contact. New contact is placed after when target is
@@ -198,5 +203,7 @@ prepare_out_req(TargetDN, TargetUri, SipMsg0) ->
     %% Generate Contact:
     URI = psip_udp_port:local_uri(),
     Contact = ersip_hdr_contact:new(URI),
-    SipMsg  = ersip_sipmsg:set(contact, [Contact], SipMsg1),
+    SipMsg2 = ersip_sipmsg:set(contact, [Contact], SipMsg1),
+    %% Setup RURI:
+    SipMsg  = ersip_sipmsg:set_ruri(TargetUri, SipMsg2),
     SipMsg.

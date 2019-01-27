@@ -15,7 +15,8 @@
 %% API
 -export([start_link/0,
          set_handler/1,
-         local_uri/0
+         local_uri/0,
+         send_request/1
         ]).
 
 %% gen_server
@@ -61,6 +62,10 @@ set_handler(Handler) ->
 -spec local_uri() -> ersip_uri:uri().
 local_uri() ->
     gen_server:call(?SERVER, local_uri).
+
+-spec send_request(ersip_request:request()) -> ok.
+send_request(OutReq) ->
+    gen_server:cast(?SERVER, {send_request, OutReq}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -130,6 +135,37 @@ handle_cast({send_response, SipMsg, RemoteAddr, RemotePort}, State) ->
             ok
     end,
     {noreply, State};
+handle_cast({send_request, OutReq}, State) ->
+    NextHop = ersip_request:nexthop(OutReq),
+    Host  = ersip_uri:host(NextHop),
+    {RemoteIP, RemotePort} =
+        case ersip_host:is_ip_address(Host) of
+            true ->
+                Port = case ersip_uri:port(NextHop) of
+                           undefined -> 5060;
+                           X -> X
+                       end,
+                {ersip_host:ip_address(Host), Port};
+            false ->
+                psip_log:warning("psip udp port: sending to DNS name is not supported yet", []),
+                {{240, 0, 0, 1}, 5060}
+        end,
+    Conn = ersip_conn:new(State#state.local_ip,
+                          State#state.local_port,
+                          RemoteIP,
+                          RemotePort,
+                          ersip_transport:udp(),
+                          #{}),
+    Msg = ersip_request:send_via_conn(OutReq, Conn),
+    psip_log:debug("psip udp port: send message to ~s:~p:~n~s",
+                   [inet:ntoa(RemoteIP), RemotePort, Msg]),
+    case gen_udp:send(State#state.socket, RemoteIP, RemotePort, Msg) of
+        ok -> ok;
+        {error, _} = Error ->
+            psip_log:warning("psip udp port: failed to send message: ~p", [Error]),
+            ok
+    end,
+    {noreply, State};
 handle_cast(Request, State) ->
     psip_log:error("psip udp port: unexpected cast: ~p", [Request]),
     {noreply, State}.
@@ -188,7 +224,7 @@ process_side_effects([E|Rest], State) ->
 
 -spec process_side_effect(ersip_conn_se:side_effect(), state()) -> ok.
 process_side_effect({bad_message, Data, Error}, _State) ->
-    psip_log:warning("psip udp port: bad message received: ~p~n~s", [Error, Data]);
+    psip_log:warning("psip udp port: bad message received: ~p~n~s", [Error, ersip_msg:serialize(Data)]);
 process_side_effect({new_request, Msg}, State) ->
     psip_log:debug("psip udp port: process new request", []),
     case State#state.handler of
@@ -204,8 +240,9 @@ process_side_effect({new_request, Msg}, State) ->
                     psip_trans:server_process(Msg, Handler)
             end
     end;
-process_side_effect({new_response, _Msg}, _State) ->
-    psip_log:debug("psip udp port: process new response", []).
+process_side_effect({new_response, Via, Msg}, _State) ->
+    psip_log:debug("psip udp port: process new response", []),
+    psip_trans:client_response(Via, Msg).
 
 
 -spec make_source_options(inet:ip_address(), inet:port_number()) -> source_options().

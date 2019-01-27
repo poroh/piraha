@@ -13,7 +13,9 @@
 
 -export([start_link/1,
          server_process/2,
-         server_response/2]).
+         server_response/2,
+         client_new/2,
+         client_response/2]).
 
 %% gen_server
 -export([init/1,
@@ -30,17 +32,27 @@
 %%===================================================================
 
 -record(state,
-        {type    :: server | client,
-         trans   :: ersip_trans:trans(),
-         handler :: psip_handler:handler(),
-         origmsg :: ersip_sipmsg:sipmsg()
+        {trans   :: ersip_trans:trans(),
+         data    :: server() | client()
         }).
 -type state() :: #state{}.
+
+-record(server, {handler :: psip_handler:handler(),
+                 origmsg :: ersip_sipmsg:sipmsg()
+                }).
+-type server() :: #server{}.
+-record(client, {outreq   :: ersip_request:request(),
+                 callback :: client_callback()
+                }).
+-type client() :: #client{}.
 
 -type start_link_ret() :: {ok, pid()} |
                           {error, {already_started, pid()}} |
                           {error, term()}.
 -type trans() :: {trans, pid()}.
+-type client_callback() :: fun((trans_result()) -> any()).
+-type trans_result() :: timeout
+                      | ersip_sipmsg:sipmsg().
 
 %%===================================================================
 %% API
@@ -73,6 +85,31 @@ server_process(Msg, Handler) ->
 -spec server_response(ersip_sipmsg:sipmsg(), trans()) -> ok.
 server_response(Resp, {trans, Pid}) ->
     gen_server:cast(Pid, {send, Resp}).
+
+-spec client_new(ersip_request:request(), client_callback()) -> ok.
+client_new(OutReq, Callback) ->
+    Args = [client, OutReq, Callback],
+    case psip_trans_sup:start_child([Args]) of
+        {ok, _} -> ok;
+        {error, _} = Error ->
+            psip_log:error("failed to create transaction: ~p", [Error])
+    end.
+
+-spec client_response(ersip_hdr_via:via(), ersip_msg:message()) -> ok.
+client_response(Via, Msg) ->
+    case ersip_sipmsg:parse(Msg, all_required) of
+        {ok, SipMsg} ->
+            TransId = ersip_trans:client_id(Via, SipMsg),
+            case gproc:lookup_local_name(TransId) of
+                Pid when is_pid(Pid) ->
+                    gen_server:cast(Pid, {received, SipMsg});
+                _ ->
+                    psip_log:warning("Cannot find transaction for request: ~p", [Via])
+            end;
+        {error, _} = Error ->
+            psip_log:warning("Failed to parse response: ~p", [Error])
+    end.
+
 
 %%===================================================================
 %% gen_server callbacks
@@ -111,12 +148,23 @@ init([server, Handler, SipMsg]) ->
     gproc:add_local_name(TransId),
     psip_log:debug("psip trans: starting server transaction with id: ~p", [TransId]),
     gen_server:cast(self(), {process_se, TransSE}),
-    State = #state{type    = server,
-                   trans   = Trans,
-                   handler = Handler,
-                   origmsg = SipMsg
+    State = #state{trans = Trans,
+                   data  = #server{handler = Handler,
+                                   origmsg = SipMsg}
+                  },
+    {ok, State};
+init([client, OutReq, Callback]) ->
+    {Trans, TransSE} = ersip_trans:new_client(OutReq, #{}),
+    TransId = ersip_trans:id(Trans),
+    gproc:add_local_name(TransId),
+    psip_log:debug("psip trans: starting client transaction with id: ~p", [TransId]),
+    gen_server:cast(self(), {process_se, TransSE}),
+    State = #state{trans   = Trans,
+                   data    = #client{outreq = OutReq,
+                                     callback = Callback}
                   },
     {ok, State}.
+
 
 handle_call(Request, _From, State) ->
     psip_log:error("psip trans: unexpected call: ~p", [Request]),
@@ -204,25 +252,33 @@ process_se_list([SE | Rest], #state{} = State) ->
     end.
 
 -spec process_se(ersip_trans_se:side_effect(), state()) -> continue | stop.
-process_se({tu_result, SipMsg}, #state{type = server, handler = Handler}) ->
+process_se({tu_result, SipMsg}, #state{data = #server{handler = Handler}}) ->
     case psip_handler:transaction(make_trans(), SipMsg, Handler) of
         ok -> ok;
         process_uas ->
             psip_uas:process(make_trans(), SipMsg, Handler)
     end,
     continue;
+process_se({tu_result, SipMsg}, #state{data = #client{callback = Callback}}) ->
+    Callback(SipMsg),
+    continue;
 process_se({set_timer, {Timeout, TimerEvent}}, #state{}) ->
     psip_log:debug("psip trans: set timer on ~p ms: ~p", [Timeout, TimerEvent]),
     erlang:send_after(Timeout, self(), {event, TimerEvent}),
     continue;
-process_se({clear_trans, Reason}, #state{handler = Handler}) ->
+process_se({clear_trans, Reason}, #state{data = #server{handler = Handler}}) ->
     psip_log:debug("psip trans: transaction cleared: ~p", [Reason]),
     psip_handler:transaction_stop({trans, self()}, Reason, Handler),
     stop;
-process_se({send_request, _OutReq}, #state{}) ->
-    %% TODO:
+process_se({clear_trans, Reason}, #state{data = #client{callback = Callback}}) ->
+    psip_log:debug("psip trans: client transaction cleared: ~p", [Reason]),
+    Callback(Reason),
+    stop;
+process_se({send_request, OutReq}, #state{}) ->
+    psip_log:debug("psip trans: sending request", []),
+    psip_udp_port:send_request(OutReq),
     continue;
-process_se({send_response, Response}, #state{origmsg = ReqSipMsg}) ->
+process_se({send_response, Response}, #state{data = #server{origmsg = ReqSipMsg}}) ->
     psip_log:debug("psip trans: sending response", []),
     psip_source:send_response(Response, ReqSipMsg),
     continue.

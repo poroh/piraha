@@ -40,20 +40,45 @@ transaction(Trans, _SipMsg, _) ->
     process_uas.
 
 -spec uas_request(psip_uas:uas(), ersip_sipmsg:sipmsg(), any()) -> ok.
-uas_request(UAS, ReqSipMsg, _) ->
-    RURI = ersip_sipmsg:ruri(ReqSipMsg),
-    RURIIO = ersip_uri:assemble(RURI),
-    psip_log:debug("new UAS request: ~s", [RURIIO]),
-    case piraha_users:lookup(RURI) of
-        {ok, Group} ->
-            piraha_hunt:start(UAS, ReqSipMsg, Group);
-        not_found ->
-            psip_log:warning("cannot find hunt group for URI: ~s", [RURIIO]),
-            NotFoundResp = ersip_sipmsg:reply(404, ReqSipMsg),
-            psip_uas:response(NotFoundResp, UAS)
+uas_request(UAS, ReqSipMsg0, _) ->
+    case dec_max_forwards(ReqSipMsg0) of
+        {reply, Resp} ->
+            psip_uas:response(Resp, UAS);
+        {ok, ReqSipMsg} ->
+            RURI = ersip_sipmsg:ruri(ReqSipMsg),
+            RURIIO = ersip_uri:assemble(RURI),
+            psip_log:debug("new UAS request: ~s", [RURIIO]),
+            case piraha_users:lookup(RURI) of
+                {ok, Group} ->
+                    piraha_hunt:start(UAS, ReqSipMsg, Group);
+                not_found ->
+                    psip_log:warning("cannot find hunt group for URI: ~s", [RURIIO]),
+                    NotFoundResp = ersip_sipmsg:reply(404, ReqSipMsg),
+                    psip_uas:response(NotFoundResp, UAS)
+            end
     end.
 
 -spec transaction_stop(psip_trans:trans(), ersip_sipmsg:sipmsg(), any()) -> ok.
 transaction_stop(Trans, Reason, _) ->
     psip_log:debug("transaction ~p stopped with reason: ~p", [Trans, Reason]),
     ok.
+
+%%===================================================================
+%% Internal implementation:
+%%===================================================================
+
+-spec dec_max_forwards(ersip_sipmsg:sipmsg()) -> {ok, ersip_sipmsg:sipmsg()} | {reply, ersip_sipmsg:sipmsg()}.
+dec_max_forwards(SipMsg) ->
+    case ersip_sipmsg:find(maxforwards, SipMsg) of
+        {ok, MaxForwardsHdr0} ->
+            case ersip_hdr_maxforwards:value(MaxForwardsHdr0) of
+                X when X == 0 ->
+                    {reply, ersip_sipmsg:reply(483, SipMsg)};
+                _ ->
+                    MaxForwardsHdr = ersip_hdr_maxforwards:dec(MaxForwardsHdr0),
+                    {ok, ersip_sipmsg:set(maxforwards, MaxForwardsHdr, SipMsg)}
+            end;
+        not_found ->
+            MaxForwardsHdr = ersip_hdr_maxforwards:make(70),
+            {ok, ersip_sipmsg:set(maxforwards, MaxForwardsHdr, SipMsg)}
+    end.
