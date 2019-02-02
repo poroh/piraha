@@ -31,7 +31,10 @@
 %% Types
 %%===================================================================
 
--record(state, {}).
+-record(state, {id :: ersip_dialog:id(),
+                dialog :: ersip_dialog:dialog(),
+                local_contact :: [ersip_hdr_contact:contact()]
+               }).
 -type state() :: #state{}.
 
 -type start_link_ret() :: {ok, pid()} |
@@ -129,16 +132,48 @@ uac_result(OutReq, TransResult) ->
                       Extra :: term()) ->
     {ok, NewState :: state()} | {error, Reason :: term()}.
 
-init([DialogId]) ->
+init({uas, RespSipMsg, ReqSipMsg}) ->
+    {ok, DialogId} = ersip_sipmsg:dialog_id(uas, RespSipMsg),
     gproc:add_local_name(DialogId),
-    psip_log:debug("psip dialog: started with id: ~p", [DialogId]),
-    State = #state{},
-    {ok, State}.
+    State = #state{id     = DialogId,
+                   dialog = ersip_dialog:uas_create(ReqSipMsg, RespSipMsg),
+                   local_contact = ersip_sipmsg:get(contact, RespSipMsg)
+                  },
+    psip_log:debug("psip dialog: started by UAS with id: ~p", [DialogId]),
+    {ok, State};
+init({uac, OutReq, RespSipMsg}) ->
+    {ok, DialogId} = ersip_sipmsg:dialog_id(uac, RespSipMsg),
+    case ersip_dialog:uac_new(OutReq, RespSipMsg) of
+        {ok, Dialog} ->
+            OutSipMsg = ersip_request:sipmsg(OutReq),
+            State = #state{id           = DialogId,
+                           dialog       = Dialog,
+                           local_contact = ersip_sipmsg:get(contact, OutSipMsg)
+                          },
+            psip_log:debug("psip dialog: started by UAC with id: ~p", [DialogId]),
+            {ok, State};
+        {error, _} = Error ->
+            psip_log:warning("psip dialog: cannot create dialog ~p", [Error]),
+            {stop, Error}
+    end.
 
+handle_call({uas_pass_response, RespSipMsg, ReqSipMsg}, _From, #state{dialog = Dialog} = State) ->
+    {NewDialog, Resp} = ersip_dialog:uas_pass_response(ReqSipMsg, RespSipMsg, Dialog),
+    NewState  = State#state{dialog = NewDialog},
+    Resp1 = maybe_set_contact(Resp, State),
+    {reply, Resp1, NewState};
 handle_call(Request, _From, State) ->
     psip_log:error("psip dialog: unexpected call: ~p", [Request]),
     {reply, {error, {unexpected_call, Request}}, State}.
 
+handle_cast({uac_early_trans_result, TransResult}, #state{dialog = Dialog} = State) ->
+    case ersip_dialog:uac_update(TransResult, Dialog) of
+        terminate_dialog ->
+            {stop, normal, State};
+        {ok, Dialog1} ->
+            NewState = State#state{dialog = Dialog1},
+            {noreply, NewState}
+    end;
 handle_cast(Request, State) ->
     psip_log:error("psip dialog: unexpected cast: ~p", [Request]),
     {noreply, State}.
@@ -199,7 +234,7 @@ uas_maybe_create_dialog(RespSipMsg, ReqSipMsg) ->
 
 -spec uas_start_dialog(ersip_sipmsg:sipmsg(), ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
 uas_start_dialog(RespSipMsg, ReqSipMsg) ->
-    Args = {uas, ReqSipMsg, RespSipMsg},
+    Args = {uas, RespSipMsg, ReqSipMsg},
     case psip_dialog_sup:start_child([Args]) of
         {ok, DialogPid} ->
             uas_pass_response(DialogPid, RespSipMsg, ReqSipMsg);
@@ -221,7 +256,7 @@ uac_start_dialog(OutReq, RespSipMsg) ->
 -spec uas_pass_response(pid(), ersip_sipmsg:sipmsg(), ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
 uas_pass_response(DialogPid, RespSipMsg, ReqSipMsg) ->
     try
-        gen_server:call(DialogPid, {uas_pass_response, ReqSipMsg, RespSipMsg})
+        gen_server:call(DialogPid, {uas_pass_response, RespSipMsg, ReqSipMsg})
     catch
         exit:{noproc, _} ->
             psip_log:warning("dialog ~p is finished, pass response without dialog processing", [DialogPid]),
@@ -267,7 +302,7 @@ uac_ensure_dialog(OutReq, RespSipMsg) ->
             CallId = ersip_sipmsg:callid(RespSipMsg),
             From = ersip_sipmsg:from(RespSipMsg),
             To   = ersip_sipmsg:to(RespSipMsg),
-            psip_log:warning("no to-tag in response: callid: ~s; from: ~s; to: ~s",
+            psip_log:warning("dialog: no to-tag in response: callid: ~s; from: ~s; to: ~s",
                              [ersip_hdr_callid:assemble(CallId),
                               ersip_hdr_fromto:assemble(From),
                               ersip_hdr_fromto:assemble(To)
@@ -287,3 +322,14 @@ uac_ensure_dialog(OutReq, RespSipMsg) ->
             end
     end.
 
+-spec maybe_set_contact(ersip_sipmsg:sipmsg(), state()) -> ersip_sipmsg:sipmsg().
+maybe_set_contact(SipMsg, #state{local_contact = LocalContact}) ->
+    case ersip_sipmsg:find(contact, SipMsg) of
+        {ok, _} ->
+            SipMsg;
+        not_found ->
+            ersip_sipmsg:set(contact, LocalContact, SipMsg);
+        {error, _} = Error ->
+            psip_log:error("overriding SIP message has bad contact: ~p", [Error]),
+            ersip_sipmsg:set(contact, LocalContact, SipMsg)
+    end.

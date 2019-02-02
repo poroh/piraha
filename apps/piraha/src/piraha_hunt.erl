@@ -123,6 +123,29 @@ handle_cast(hunt_next, #state{} = State) ->
             psip_uac:request(SipMsgToSend, Nexthop, ResultFun),
             {noreply, State#state{group = Group1}}
     end;
+handle_cast({response, Resp}, #state{} = State) ->
+    case ersip_sipmsg:status(Resp) of
+        100 ->
+            {noreply, State};
+        X when X > 100 andalso X =< 199 ->
+            psip_log:info("piraha hunt: passing provisional response: ~p", [X]),
+            OutResp = prepare_response(Resp, State#state.request),
+            psip_uas:response(OutResp, State#state.uas),
+            {noreply, State};
+        X when X >= 200 andalso X =< 299 ->
+            psip_log:info("piraha hunt: got final response: ~p", [X]),
+            OutResp = prepare_response(Resp, State#state.request),
+            psip_b2bua:join_dialogs(OutResp, Resp),
+            {stop, normal, State};
+        X when X >= 300 andalso X =< 399 ->
+            psip_log:warning("piraha hunt: sorry, redirects (~p) are not supported.", [X]),
+            gen_server:cast(self(), hunt_next),
+            {noreply, State};
+        X when X > 400 ->
+            psip_log:warning("piraha hunt: hunting next by response code: ~p", [X]),
+            gen_server:cast(self(), hunt_next),
+            {noreply, State}
+    end;
 handle_cast(Request, State) ->
     psip_log:error("piraha hunt: unexpected cast: ~p", [Request]),
     {noreply, State}.
@@ -207,3 +230,21 @@ prepare_out_req(TargetDN, TargetUri, SipMsg0) ->
     %% Setup RURI:
     SipMsg  = ersip_sipmsg:set_ruri(TargetUri, SipMsg2),
     SipMsg.
+
+
+-spec prepare_response(ersip_sipmsg:sipmsg(), ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
+prepare_response(InResp, Request) ->
+    Reply = ersip_reply:new(ersip_sipmsg:status(InResp),
+                            [{reason, ersip_sipmsg:reason(InResp)}]),
+    OutResp0 = ersip_sipmsg:reply(Reply, Request),
+    FilterHdrs = [ersip_hnames:make_key(<<"route">>),
+                  ersip_hnames:make_key(<<"record-route">>)
+                  | ersip_sipmsg:header_keys(OutResp0)],
+    CopyHdrs = ersip_sipmsg:header_keys(InResp) -- FilterHdrs,
+    OutResp1 = lists:foldl(fun(Hdr, OutR) ->
+                                   ersip_sipmsg:copy(Hdr, InResp, OutR)
+                           end,
+                           OutResp0,
+                           CopyHdrs),
+    Body = ersip_sipmsg:body(InResp),
+    ersip_sipmsg:set_body(Body, OutResp1).
