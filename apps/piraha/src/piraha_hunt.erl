@@ -29,7 +29,8 @@
                 request     :: ersip_sipmsg:sipmsg(),
                 fwd_request :: ersip_sipmsg:sipmsg() | undefined,
                 group       :: piraha_group:group(),
-                uac         :: psip_uac:uac()
+                uac         :: psip_uac:uac(),
+                to_tag      :: ersip_hdr_fromto:tag()
                }).
 -type state() :: #state{}.
 
@@ -91,7 +92,9 @@ start(UAS, OrigSipMsg, Group) ->
 init([UAS, ReqSipMsg, Group]) ->
     State = #state{uas = UAS,
                    request = ReqSipMsg,
-                   group = Group},
+                   group = Group,
+                   to_tag = {tag, ersip_id:token(crypto:strong_rand_bytes(8))}
+                  },
     gen_server:cast(self(), start_hunt),
     {ok, State}.
 
@@ -129,13 +132,16 @@ handle_cast({response, Resp}, #state{} = State) ->
             {noreply, State};
         X when X > 100 andalso X =< 199 ->
             psip_log:info("piraha hunt: passing provisional response: ~p", [X]),
-            OutResp = prepare_response(Resp, State#state.request),
+            OutResp = prepare_response(Resp, State#state.request, State#state.to_tag),
             psip_uas:response(OutResp, State#state.uas),
             {noreply, State};
         X when X >= 200 andalso X =< 299 ->
             psip_log:info("piraha hunt: got final response: ~p", [X]),
-            OutResp = prepare_response(Resp, State#state.request),
-            psip_b2bua:join_dialogs(OutResp, Resp),
+            OutResp = prepare_response(Resp, State#state.request, State#state.to_tag),
+            {ok, DialogId1} = ersip_sipmsg:dialog_id(uas, OutResp),
+            {ok, DialogId2} = ersip_sipmsg:dialog_id(uac, Resp),
+            psip_b2bua:join_dialogs(DialogId1, DialogId2),
+            psip_uas:response(OutResp, State#state.uas),
             {stop, normal, State};
         X when X >= 300 andalso X =< 399 ->
             psip_log:warning("piraha hunt: sorry, redirects (~p) are not supported.", [X]),
@@ -232,10 +238,11 @@ prepare_out_req(TargetDN, TargetUri, SipMsg0) ->
     SipMsg.
 
 
--spec prepare_response(ersip_sipmsg:sipmsg(), ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
-prepare_response(InResp, Request) ->
+-spec prepare_response(ersip_sipmsg:sipmsg(), ersip_sipmsg:sipmsg(), ersip_hdr_fromto:tag()) -> ersip_sipmsg:sipmsg().
+prepare_response(InResp, Request, ToTag) ->
     Reply = ersip_reply:new(ersip_sipmsg:status(InResp),
-                            [{reason, ersip_sipmsg:reason(InResp)}]),
+                            [{reason, ersip_sipmsg:reason(InResp)},
+                             {to_tag, ToTag}]),
     OutResp0 = ersip_sipmsg:reply(Reply, Request),
     FilterHdrs = [ersip_hnames:make_key(<<"route">>),
                   ersip_hnames:make_key(<<"record-route">>)

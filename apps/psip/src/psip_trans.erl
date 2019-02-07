@@ -70,12 +70,17 @@ server_process(Msg, Handler) ->
                 {ok, Pid} ->
                     gen_server:cast(Pid, {received, SipMsg});
                 error ->
-                    psip_log:debug("transaction is not found: creating new one", []),
-                    Args = [server, Handler, SipMsg],
-                    case psip_trans_sup:start_child([Args]) of
-                        {ok, _} -> ok;
-                        {error, _} = Error ->
-                            psip_log:error("failed to create transaction: ~p", [Error])
+                    case ersip_sipmsg:method(SipMsg) == ersip_method:ack() of
+                        true ->
+                            psip_uas:process_ack(SipMsg, Handler);
+                        false ->
+                            psip_log:debug("transaction is not found: creating new one", []),
+                            Args = [server, Handler, SipMsg],
+                            case psip_trans_sup:start_child([Args]) of
+                                {ok, _} -> ok;
+                                {error, _} = Error ->
+                                    psip_log:error("failed to create transaction: ~p", [Error])
+                            end
                     end
             end;
         {error, _} = Error ->
@@ -266,6 +271,9 @@ process_se({set_timer, {Timeout, TimerEvent}}, #state{}) ->
     psip_log:debug("psip trans: set timer on ~p ms: ~p", [Timeout, TimerEvent]),
     erlang:send_after(Timeout, self(), {event, TimerEvent}),
     continue;
+process_se({clear_trans, normal}, #state{data = #server{}}) ->
+    psip_log:debug("psip trans: transaction cleared: normal", []),
+    stop;
 process_se({clear_trans, Reason}, #state{data = #server{handler = Handler}}) ->
     psip_log:debug("psip trans: transaction cleared: ~p", [Reason]),
     psip_handler:transaction_stop({trans, self()}, Reason, Handler),

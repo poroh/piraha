@@ -10,6 +10,7 @@
 -module(psip_uas).
 
 -export([process/3,
+         process_ack/2,
          response/2
         ]).
 -export_type([uas/0]).
@@ -37,6 +38,20 @@ process(Trans, ReqSipMsg0, Handler) ->
                     UAS = make_uas(ReqSipMsg1, Trans),
                     psip_handler:uas_request(UAS, ReqSipMsg1, Handler)
             end
+    end.
+
+-spec process_ack(ersip_sipmsg:sipmsg(), psip_handler:handler()) -> ok.
+process_ack(ReqSipMsg, Handler) ->
+    case psip_dialog:uas_find(ReqSipMsg) of
+        {ok, _} ->
+            case psip_b2bua:process_ack(ReqSipMsg) of
+                ok -> ok;
+                not_found ->
+                    psip_handler:process_ack(ReqSipMsg, Handler)
+            end;
+        not_found ->
+            psip_log:warning("uas: cannot find dialog for ACK", []),
+            ok
     end.
 
 -spec response(ersip_sipmsg:sipmsg(), psip_trans:trans()) -> ok.

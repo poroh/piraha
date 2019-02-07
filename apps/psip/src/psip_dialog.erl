@@ -11,7 +11,8 @@
 
 -behaviour(gen_server).
 
--export([start_link/1,
+-export([uas_find/1,
+         start_link/1,
          uas_request/1,
          uas_response/2,
          uac_result/2
@@ -41,10 +42,19 @@
                           {error, {already_started, pid()}} |
                           {error, term()}.
 -type trans() :: {trans, pid()}.
+-type dialog_handle() :: pid().
 
 %%===================================================================
 %% API
 %%===================================================================
+
+-spec uas_find(ersip_sipmsg:sipmsg()) -> {ok, dialog_handle()} | not_found.
+uas_find(ReqSipMsg) ->
+    case ersip_dialog:uas_dialog_id(ReqSipMsg) of
+        no_dialog -> not_found;
+        {ok, DialogId} ->
+            find_dialog(DialogId)
+    end.
 
 -spec start_link(term()) -> start_link_ret().
 start_link(Args) ->
@@ -74,7 +84,7 @@ uas_request(SipMsg) ->
 
 -spec uas_response(ersip_sipmsg:sipmsg(), ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
 uas_response(RespSipMsg, ReqSipMsg) ->
-    case ersip_dialog:uas_dialog_id(RespSipMsg) of
+    case ersip_sipmsg:dialog_id(uas, RespSipMsg) of
         no_dialog -> RespSipMsg;
         {ok, DialogId} ->
             case find_dialog(DialogId) of
@@ -84,6 +94,9 @@ uas_response(RespSipMsg, ReqSipMsg) ->
                     uas_pass_response(DialogPid, RespSipMsg, ReqSipMsg)
             end
     end.
+
+-spec uac_request(ersip_sipmsg:sipmsg(), ersip_dialog:id()) -> ok
+
 
 -spec uac_result(ersip_request:request(), ersip_trans:trans_result()) -> ok.
 uac_result(OutReq, TransResult) ->
@@ -100,6 +113,7 @@ uac_result(OutReq, TransResult) ->
                     uac_trans_result(DialogPid, TransResult)
             end
     end.
+
 
 %%===================================================================
 %% gen_server callbacks
@@ -146,6 +160,7 @@ init({uac, OutReq, RespSipMsg}) ->
     case ersip_dialog:uac_new(OutReq, RespSipMsg) of
         {ok, Dialog} ->
             OutSipMsg = ersip_request:sipmsg(OutReq),
+            gproc:add_local_name(DialogId),
             State = #state{id           = DialogId,
                            dialog       = Dialog,
                            local_contact = ersip_sipmsg:get(contact, OutSipMsg)
@@ -157,6 +172,14 @@ init({uac, OutReq, RespSipMsg}) ->
             {stop, Error}
     end.
 
+handle_call({uas_request, SipMsg}, _From, #state{dialog = Dialog} = State) ->
+    ReqType = request_type(SipMsg),
+    case ersip_dialog:uas_process(SipMsg, ReqType, Dialog) of
+        {ok, Dialog1} ->
+            {reply, process, State#state{dialog = Dialog1}};
+        {reply, _} = Reply ->
+            {reply, Reply, State}
+    end;
 handle_call({uas_pass_response, RespSipMsg, ReqSipMsg}, _From, #state{dialog = Dialog} = State) ->
     {NewDialog, Resp} = ersip_dialog:uas_pass_response(ReqSipMsg, RespSipMsg, Dialog),
     NewState  = State#state{dialog = NewDialog},
@@ -332,4 +355,13 @@ maybe_set_contact(SipMsg, #state{local_contact = LocalContact}) ->
         {error, _} = Error ->
             psip_log:error("overriding SIP message has bad contact: ~p", [Error]),
             ersip_sipmsg:set(contact, LocalContact, SipMsg)
+    end.
+
+-spec request_type(ersip_sipmsg:sipmsg()) -> ersip_dialog:request_type().
+request_type(SipMsg) ->
+    case ersip_sipmsg:method(SipMsg) == ersip_method:invite() of
+        true ->
+            target_refresh;
+        false ->
+            regular
     end.
