@@ -11,6 +11,7 @@
 
 -export([start_link/1,
          join_dialogs/2,
+         process/1,
          process_ack/1
         ]).
 
@@ -46,6 +47,20 @@ join_dialogs(DialogId1, DialogId2) ->
     Args = {DialogId1, DialogId2},
     {ok, _} = psip_b2bua_sup:start_child([Args]),
     ok.
+
+-spec process(psip_uas:uas()) -> ok | not_found.
+process(UAS) ->
+    SipMsg = psip_uas:sipmsg(UAS),
+    case ersip_sipmsg:dialog_id(uas, SipMsg) of
+        no_dialog -> not_found;
+        {ok, DialogId} ->
+            case find_b2bua(DialogId) of
+                {ok, Pid} ->
+                    gen_server:cast(Pid, {pass, DialogId, UAS});
+                not_found ->
+                    not_found
+            end
+    end.
 
 -spec process_ack(ersip_sipmsg:sipmsg()) -> ok | not_found.
 process_ack(SipMsg) ->
@@ -105,8 +120,29 @@ handle_call(Request, _From, State) ->
 handle_cast({pass_ack, SrcDialogId, AckSipMsg}, #state{} = State) ->
     DstDialogId = another_dialog_id(SrcDialogId, State#state.ids),
     psip_log:debug("b2bua: passing ACK to: ~p", [DstDialogId]),
-    psip_dialog:uac_request(DstDialogId, AckSipMsg),
+    case psip_dialog:uac_request(DstDialogId, AckSipMsg) of
+        {ok, DstAckSipMsg} ->
+            psip_uac:ack_request(DstAckSipMsg);
+        {error, _} = Error ->
+            psip_log:warning("b2bua: cannot pass message: ~p", [Error])
+    end,
     {noreply, State};
+handle_cast({pass, SrcDialogId, UAS}, #state{} = State) ->
+    DstDialogId = another_dialog_id(SrcDialogId, State#state.ids),
+    SipMsg = psip_uas:sipmsg(UAS),
+    psip_log:debug("b2bua: passing ~s to: ~p", [ersip_sipmsg:method_bin(SipMsg), DstDialogId]),
+    case psip_dialog:uac_request(DstDialogId, SipMsg) of
+        {ok, DstSipMsg} ->
+            psip_uac:request(DstSipMsg, make_req_callback(UAS));
+        {error, _} = Error ->
+            psip_log:warning("b2bua: cannot pass message: ~p", [Error])
+    end,
+    case ersip_sipmsg:method(SipMsg) == ersip_method:bye() of
+        true ->
+            {stop, normal, State};
+        false ->
+            {noreply, State}
+    end;
 handle_cast(Request, State) ->
     psip_log:error("b2bua: unexpected cast: ~p", [Request]),
     {noreply, State}.
@@ -145,3 +181,32 @@ another_dialog_id(A, {A, B}) ->
     B;
 another_dialog_id(B, {A, B}) ->
     A.
+
+-spec make_req_callback(psip_uas:uas()) -> psip_uas:uas().
+make_req_callback(UAS) ->
+    fun({message, RespSipMsg}) ->
+            OutResp = pass_response(RespSipMsg, UAS),
+            psip_uas:response(OutResp, UAS);
+       ({stop, _}) ->
+            ok
+    end.
+
+
+-spec pass_response(ersip_sipmsg:sipmsg(), psip_uas:uas()) -> ersip_sipmsg:sipmsg().
+pass_response(InResp, UAS) ->
+    InitialReq = psip_uas:sipmsg(UAS),
+    Reply = psip_uas:make_reply(ersip_sipmsg:status(InResp),
+                                ersip_sipmsg:reason(InResp),
+                                UAS),
+    OutResp0 = ersip_sipmsg:reply(Reply, InitialReq),
+    FilterHdrs = [ersip_hnames:make_key(<<"route">>),
+                  ersip_hnames:make_key(<<"record-route">>)
+                  | ersip_sipmsg:header_keys(OutResp0)],
+    CopyHdrs = ersip_sipmsg:header_keys(InResp) -- FilterHdrs,
+    OutResp1 = lists:foldl(fun(Hdr, OutR) ->
+                                   ersip_sipmsg:copy(Hdr, InResp, OutR)
+                           end,
+                           OutResp0,
+                           CopyHdrs),
+    Body = ersip_sipmsg:body(InResp),
+    ersip_sipmsg:set_body(Body, OutResp1).

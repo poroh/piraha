@@ -11,7 +11,9 @@
 
 -export([process/3,
          process_ack/2,
-         response/2
+         response/2,
+         sipmsg/1,
+         make_reply/3
         ]).
 -export_type([uas/0]).
 
@@ -19,7 +21,11 @@
 %% Types
 %%===================================================================
 
--type uas() :: {uas, psip_trans:trans(), ersip_sipmsg:sipmsg()}.
+-record(uas, {trans    :: psip_trans:trans(),
+              req      :: ersip_sipmsg:sipmsg(),
+              resp_tag :: ersip_hdr_fromto:tag()
+             }).
+-type uas() :: #uas{}.
 
 %%===================================================================
 %% API
@@ -36,7 +42,11 @@ process(Trans, ReqSipMsg0, Handler) ->
                     psip_trans:server_response(Resp, Trans);
                 process ->
                     UAS = make_uas(ReqSipMsg1, Trans),
-                    psip_handler:uas_request(UAS, ReqSipMsg1, Handler)
+                    case psip_b2bua:process(UAS) of
+                        ok -> ok;
+                        not_found ->
+                            psip_handler:uas_request(UAS, ReqSipMsg1, Handler)
+                    end
             end
     end.
 
@@ -55,9 +65,19 @@ process_ack(ReqSipMsg, Handler) ->
     end.
 
 -spec response(ersip_sipmsg:sipmsg(), psip_trans:trans()) -> ok.
-response(RespSipMsg0, {uas, Trans, ReqSipMsg}) ->
+response(RespSipMsg0, #uas{trans = Trans, req = ReqSipMsg}) ->
     RespSipMsg = psip_dialog:uas_response(RespSipMsg0, ReqSipMsg),
     psip_trans:server_response(RespSipMsg, Trans).
+
+-spec sipmsg(uas()) -> ersip_sipmsg:sipmsg().
+sipmsg(#uas{req = ReqSipMsg}) ->
+    ReqSipMsg.
+
+-spec make_reply(ersip_status:code(), binary(), uas()) -> ersip_reply:options().
+make_reply(Code, ReasonPhrase, #uas{resp_tag = Tag}) ->
+    ersip_reply:new(Code,
+                    [{reason, ReasonPhrase},
+                     {to_tag, Tag}]).
 
 %%===================================================================
 %% Internal implementation
@@ -71,7 +91,10 @@ allowed_methods() ->
     ersip_method_set:invite_set().
 
 make_uas(ReqSipMsg, Trans) ->
-    {uas, Trans, ReqSipMsg}.
+    #uas{trans = Trans,
+         req = ReqSipMsg,
+         resp_tag = {tag, ersip_id:token(crypto:strong_rand_bytes(6))}
+        }.
 
 -spec check_scheme(binary()) -> boolean().
 check_scheme(<<"sip">>) -> true;

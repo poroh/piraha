@@ -120,8 +120,9 @@ handle_cast(hunt_next, #state{} = State) ->
             SipMsgToSend = prepare_out_req(DN, URI, State#state.fwd_request),
             psip_log:debug("piraha hunt: out message:~n~s", [ersip_sipmsg:serialize(SipMsgToSend)]),
             Self = self(),
-            ResultFun = fun(timeout) -> gen_server:cast(Self, timeout);
-                           (Resp)    -> gen_server:cast(Self, {response, Resp})
+            ResultFun = fun({stop, timeout}) -> gen_server:cast(Self, timeout);
+                           ({stop, _}) -> ok;
+                           ({message, Resp})    -> gen_server:cast(Self, {response, Resp})
                         end,
             psip_uac:request(SipMsgToSend, Nexthop, ResultFun),
             {noreply, State#state{group = Group1}}

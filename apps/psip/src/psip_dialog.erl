@@ -15,6 +15,7 @@
          start_link/1,
          uas_request/1,
          uas_response/2,
+         uac_request/2,
          uac_result/2
         ]).
 
@@ -95,8 +96,15 @@ uas_response(RespSipMsg, ReqSipMsg) ->
             end
     end.
 
--spec uac_request(ersip_sipmsg:sipmsg(), ersip_dialog:id()) -> ok
-
+-spec uac_request(ersip_dialog:id(), ersip_sipmsg:sipmsg())
+                 -> {ok, ersip_sipmsg:sipmsg()} | {error, no_dialog}.
+uac_request(DialogId, SipMsg) ->
+    case find_dialog(DialogId) of
+        {ok, DialogPid} ->
+            gen_server:call(DialogPid, {uac_request, SipMsg});
+        not_found ->
+            {error, no_dialog}
+    end.
 
 -spec uac_result(ersip_request:request(), ersip_trans:trans_result()) -> ok.
 uac_result(OutReq, TransResult) ->
@@ -185,17 +193,40 @@ handle_call({uas_pass_response, RespSipMsg, ReqSipMsg}, _From, #state{dialog = D
     NewState  = State#state{dialog = NewDialog},
     Resp1 = maybe_set_contact(Resp, State),
     {reply, Resp1, NewState};
+handle_call({uac_request, SipMsg}, _From, #state{dialog = Dialog} = State) ->
+    {NewDialog, DlgSipMsg1} = ersip_dialog:uac_request(SipMsg, Dialog),
+    NewState  = State#state{dialog = NewDialog},
+    {reply, {ok, DlgSipMsg1}, NewState};
 handle_call(Request, _From, State) ->
     psip_log:error("psip dialog: unexpected call: ~p", [Request]),
     {reply, {error, {unexpected_call, Request}}, State}.
 
-handle_cast({uac_early_trans_result, TransResult}, #state{dialog = Dialog} = State) ->
-    case ersip_dialog:uac_update(TransResult, Dialog) of
+handle_cast({uac_early_trans_result, {stop, timeout}}, #state{} = State) ->
+    psip_log:warning("psip dialog: stopped because timeout", []),
+    {stop, normal, State};
+handle_cast({uac_early_trans_result, {stop, _}}, #state{} = State) ->
+    {noreply, State};
+handle_cast({uac_early_trans_result, {message, RespSipMsg}}, #state{dialog = Dialog} = State) ->
+    case ersip_dialog:uac_update(RespSipMsg, Dialog) of
         terminate_dialog ->
             {stop, normal, State};
         {ok, Dialog1} ->
             NewState = State#state{dialog = Dialog1},
             {noreply, NewState}
+    end;
+handle_cast({uac_trans_result, {stop, timeout}}, #state{} = State) ->
+    psip_log:warning("psip dialog: stopped because timeout", []),
+    {stop, normal, State};
+handle_cast({uac_trans_result, {stop, _}}, #state{} = State) ->
+    {noreply, State};
+handle_cast({uac_trans_result, {message, RespSipMsg}}, #state{dialog = Dialog} = State) ->
+    ReqType = request_type(RespSipMsg),
+    psip_log:debug("psip dialog: transaction result ~p", [ReqType]),
+    case ersip_dialog:uac_trans_result(RespSipMsg, ReqType, Dialog) of
+        terminate_dialog ->
+            {stop, normal, State};
+        {ok, Dialog1} ->
+            {noreply, State#state{dialog = Dialog1}}
     end;
 handle_cast(Request, State) ->
     psip_log:error("psip dialog: unexpected cast: ~p", [Request]),
@@ -295,11 +326,11 @@ uac_trans_result(DialogPid, TransResult) ->
     gen_server:cast(DialogPid, {uac_trans_result, TransResult}).
 
 -spec uac_early_trans_result(pid(), psip_trans:trans_result()) -> ok.
-uac_early_trans_result(DialogPid, RespSipMsg) ->
-    gen_server:cast(DialogPid, {uac_early_trans_result, RespSipMsg}).
+uac_early_trans_result(DialogPid, TransResult) ->
+    gen_server:cast(DialogPid, {uac_early_trans_result, TransResult}).
 
 -spec uac_no_dialog_result(ersip_request:request(), psip_trans:trans_result()) -> ok.
-uac_no_dialog_result(OutReq, timeout) ->
+uac_no_dialog_result(OutReq, {stop, timeout} = TransResult) ->
     ReqSipMsg = ersip_request:sipmsg(OutReq),
     case need_create_dialog(ReqSipMsg) of
         true ->
@@ -307,11 +338,13 @@ uac_no_dialog_result(OutReq, timeout) ->
             case find_dialog(Branch) of
                 not_found -> ok;
                 {ok, DialogPid} ->
-                    uac_early_trans_result(DialogPid, timeout)
+                    uac_early_trans_result(DialogPid, TransResult)
             end;
         false -> ok
     end;
-uac_no_dialog_result(OutReq, RespSipMsg) ->
+uac_no_dialog_result(_, {stop, _}) ->
+    ok;
+uac_no_dialog_result(OutReq, {message, RespSipMsg}) ->
     ReqSipMsg = ersip_request:sipmsg(OutReq),
     case need_create_dialog(ReqSipMsg) of
         true  -> uac_ensure_dialog(OutReq, RespSipMsg);
@@ -341,7 +374,7 @@ uac_ensure_dialog(OutReq, RespSipMsg) ->
                         _ -> ok
                     end;
                 {ok, DialogPid} ->
-                    uac_early_trans_result(DialogPid, RespSipMsg)
+                    uac_early_trans_result(DialogPid, {message, RespSipMsg})
             end
     end.
 

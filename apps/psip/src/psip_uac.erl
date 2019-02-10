@@ -9,7 +9,10 @@
 
 -module(psip_uac).
 
--export([request/3]).
+-export([request/3,
+         request/2,
+         ack_request/1
+        ]).
 
 %%===================================================================
 %% Types
@@ -28,6 +31,19 @@ request(SipMsg, Nexthop, UACCallBack) ->
     OutReq = ersip_request:new(SipMsg, Branch, Nexthop),
     CallbackFun = make_transaction_handler(OutReq, UACCallBack),
     psip_trans:client_new(OutReq, CallbackFun).
+
+-spec request(ersip_sipmsg:sipmsg(), callback()) -> ok.
+request(SipMsg, UACCallBack) ->
+    Branch = ersip_branch:make_random(6),
+    OutReq = ersip_request:new(SipMsg, Branch),
+    CallbackFun = make_transaction_handler(OutReq, UACCallBack),
+    psip_trans:client_new(OutReq, CallbackFun).
+
+-spec ack_request(ersip_sipmsg:sipmsg()) -> ok.
+ack_request(SipMsg) ->
+    Branch = ersip_branch:make_random(6),
+    OutReq = ersip_request:new(SipMsg, Branch),
+    psip_udp_port:send_request(OutReq).
 
 %%===================================================================
 %% Internal Implementation

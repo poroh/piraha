@@ -51,8 +51,9 @@
                           {error, term()}.
 -type trans() :: {trans, pid()}.
 -type client_callback() :: fun((trans_result()) -> any()).
--type trans_result() :: timeout
-                      | ersip_sipmsg:sipmsg().
+-type trans_result() :: {stop, stop_reason()}
+                      | {message, ersip_sipmsg:sipmsg()}.
+-type stop_reason() :: ersip_trans_se:clear_reason().
 
 %%===================================================================
 %% API
@@ -265,7 +266,7 @@ process_se({tu_result, SipMsg}, #state{data = #server{handler = Handler}}) ->
     end,
     continue;
 process_se({tu_result, SipMsg}, #state{data = #client{callback = Callback}}) ->
-    Callback(SipMsg),
+    Callback({message, SipMsg}),
     continue;
 process_se({set_timer, {Timeout, TimerEvent}}, #state{}) ->
     psip_log:debug("psip trans: set timer on ~p ms: ~p", [Timeout, TimerEvent]),
@@ -280,7 +281,7 @@ process_se({clear_trans, Reason}, #state{data = #server{handler = Handler}}) ->
     stop;
 process_se({clear_trans, Reason}, #state{data = #client{callback = Callback}}) ->
     psip_log:debug("psip trans: client transaction cleared: ~p", [Reason]),
-    Callback(Reason),
+    Callback({stop, Reason}),
     stop;
 process_se({send_request, OutReq}, #state{}) ->
     psip_log:debug("psip trans: sending request", []),
