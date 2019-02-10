@@ -223,6 +223,8 @@ process_side_effects([E|Rest], State) ->
     process_side_effects(Rest, State).
 
 -spec process_side_effect(ersip_conn_se:side_effect(), state()) -> ok.
+process_side_effect({bad_message, Data, Error}, _State) when is_binary(Data) ->
+    psip_log:warning("psip udp port: bad message received: ~p~n~s", [Error, Data]);
 process_side_effect({bad_message, Data, Error}, _State) ->
     psip_log:warning("psip udp port: bad message received: ~p~n~s", [Error, ersip_msg:serialize(Data)]);
 process_side_effect({new_request, Msg}, State) ->

@@ -117,9 +117,10 @@ handle_call(Request, _From, State) ->
     psip_log:error("b2bua: unexpected call: ~p", [Request]),
     {reply, {error, {unexpected_call, Request}}, State}.
 
-handle_cast({pass_ack, SrcDialogId, AckSipMsg}, #state{} = State) ->
+handle_cast({pass_ack, SrcDialogId, AckSipMsg0}, #state{} = State) ->
     DstDialogId = another_dialog_id(SrcDialogId, State#state.ids),
     psip_log:debug("b2bua: passing ACK to: ~p", [DstDialogId]),
+    AckSipMsg = pass_request(AckSipMsg0),
     case psip_dialog:uac_request(DstDialogId, AckSipMsg) of
         {ok, DstAckSipMsg} ->
             psip_uac:ack_request(DstAckSipMsg);
@@ -129,7 +130,8 @@ handle_cast({pass_ack, SrcDialogId, AckSipMsg}, #state{} = State) ->
     {noreply, State};
 handle_cast({pass, SrcDialogId, UAS}, #state{} = State) ->
     DstDialogId = another_dialog_id(SrcDialogId, State#state.ids),
-    SipMsg = psip_uas:sipmsg(UAS),
+    SipMsg0 = psip_uas:sipmsg(UAS),
+    SipMsg = pass_request(SipMsg0),
     psip_log:debug("b2bua: passing ~s to: ~p", [ersip_sipmsg:method_bin(SipMsg), DstDialogId]),
     case psip_dialog:uac_request(DstDialogId, SipMsg) of
         {ok, DstSipMsg} ->
@@ -208,5 +210,19 @@ pass_response(InResp, UAS) ->
                            end,
                            OutResp0,
                            CopyHdrs),
+
+    URI = psip_udp_port:local_uri(),
+    Contact = ersip_hdr_contact:new(URI),
+    OutResp2 = ersip_sipmsg:set(contact, [Contact], OutResp1),
+
     Body = ersip_sipmsg:body(InResp),
-    ersip_sipmsg:set_body(Body, OutResp1).
+    ersip_sipmsg:set_body(Body, OutResp2).
+
+-spec pass_request(ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
+pass_request(SipMsg0) ->
+    %% Remove routing info
+    SipMsg1 = ersip_sipmsg:remove_list([<<"via">>, route, record_route], SipMsg0),
+    %% Generate Contact:
+    URI = psip_udp_port:local_uri(),
+    Contact = ersip_hdr_contact:new(URI),
+    ersip_sipmsg:set(contact, [Contact], SipMsg1).
