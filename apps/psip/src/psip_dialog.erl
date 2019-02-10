@@ -192,7 +192,12 @@ handle_call({uas_pass_response, RespSipMsg, ReqSipMsg}, _From, #state{dialog = D
     {NewDialog, Resp} = ersip_dialog:uas_pass_response(ReqSipMsg, RespSipMsg, Dialog),
     NewState  = State#state{dialog = NewDialog},
     Resp1 = maybe_set_contact(Resp, State),
-    {reply, Resp1, NewState};
+    case ersip_sipmsg:method(Resp1) == ersip_method:bye() of
+        true ->
+            {stop, normal, Resp1, NewState};
+        false ->
+            {reply, Resp1, NewState}
+    end;
 handle_call({uac_request, SipMsg}, _From, #state{dialog = Dialog} = State) ->
     {NewDialog, DlgSipMsg1} = ersip_dialog:uac_request(SipMsg, Dialog),
     NewState  = State#state{dialog = NewDialog},
@@ -226,7 +231,13 @@ handle_cast({uac_trans_result, {message, RespSipMsg}}, #state{dialog = Dialog} =
         terminate_dialog ->
             {stop, normal, State};
         {ok, Dialog1} ->
-            {noreply, State#state{dialog = Dialog1}}
+            NewState = State#state{dialog = Dialog1},
+            case ersip_sipmsg:method(RespSipMsg) == ersip_method:bye() of
+                true ->
+                    {stop, normal, NewState};
+                false ->
+                    {noreply, NewState}
+            end
     end;
 handle_cast(Request, State) ->
     psip_log:error("psip dialog: unexpected cast: ~p", [Request]),
