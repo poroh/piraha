@@ -183,7 +183,7 @@ prepare_fwd_req(SipMsg0) ->
     SipMsg2 = filter_allow(SipMsg1),
     %% Remove supported from header because this is not our "supported".
     SipMsg3 = ersip_sipmsg:remove(supported, SipMsg2),
-    SipMsg  = new_dialog_informaton(SipMsg3),
+    SipMsg  = new_dialog_information(SipMsg3),
     SipMsg.
 
 -spec remove_route_info(ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
@@ -205,8 +205,8 @@ filter_allow(SipMsg) ->
             ersip_sipmsg:remove(<<"allow">>, SipMsg)
     end.
 
--spec new_dialog_informaton(ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
-new_dialog_informaton(SipMsg0) ->
+-spec new_dialog_information(ersip_sipmsg:sipmsg()) -> ersip_sipmsg:sipmsg().
+new_dialog_information(SipMsg0) ->
     %% Generate new Call-ID:
     CallId = ersip_hdr_callid:make(ersip_id:word(crypto:strong_rand_bytes(12))),
     SipMsg1 = ersip_sipmsg:set(callid, CallId, SipMsg0),
@@ -246,7 +246,8 @@ prepare_response(InResp, Request, ToTag) ->
                              {to_tag, ToTag}]),
     OutResp0 = ersip_sipmsg:reply(Reply, Request),
     FilterHdrs = [ersip_hnames:make_key(<<"route">>),
-                  ersip_hnames:make_key(<<"record-route">>)
+                  ersip_hnames:make_key(<<"record-route">>),
+                  ersip_hnames:make_key(<<"contact">>)
                   | ersip_sipmsg:header_keys(OutResp0)],
     CopyHdrs = ersip_sipmsg:header_keys(InResp) -- FilterHdrs,
     OutResp1 = lists:foldl(fun(Hdr, OutR) ->
@@ -254,5 +255,10 @@ prepare_response(InResp, Request, ToTag) ->
                            end,
                            OutResp0,
                            CopyHdrs),
+
+    URI = psip_udp_port:local_uri(),
+    Contact = ersip_hdr_contact:new(URI),
+    OutResp2 = ersip_sipmsg:set(contact, [Contact], OutResp1),
+
     Body = ersip_sipmsg:body(InResp),
-    ersip_sipmsg:set_body(Body, OutResp1).
+    ersip_sipmsg:set_body(Body, OutResp2).
