@@ -9,8 +9,10 @@
 
 -module(psip_uas).
 
--export([process/3,
+-export([id/1,
+         process/3,
          process_ack/2,
+         process_cancel/2,
          response/2,
          sipmsg/1,
          make_reply/3
@@ -26,28 +28,48 @@
               resp_tag :: ersip_hdr_fromto:tag()
              }).
 -type uas() :: #uas{}.
+-type uas_id() :: {uas_id, psip_trans:trans()}.
 
 %%===================================================================
 %% API
 %%===================================================================
 
+-spec id(uas()) -> uas_id().
+id(#uas{trans = Trans}) ->
+    {uas_id, Trans}.
+
 -spec process(psip_trans:trans(), ersip_sipmsg:sipmsg(), psip_handler:handler()) -> ok.
-process(Trans, ReqSipMsg0, Handler) ->
-    case ersip_uas:process_request(ReqSipMsg0, allowed_methods(), uas_options()) of
+process(Trans, SipMsg0, Handler) ->
+    Process =
+        [fun(SipMsg) ->
+                 ersip_uas:process_request(SipMsg, allowed_methods(), uas_options())
+         end,
+         fun(SipMsg) ->
+                 case psip_dialog:uas_request(SipMsg) of
+                     {reply, _} = Reply -> Reply;
+                     process -> {process, SipMsg}
+                 end
+         end,
+         fun(SipMsg) ->
+                 case ersip_sipmsg:method(SipMsg) == ersip_method:cancel() of
+                     false -> {process, SipMsg};
+                     true ->
+                         psip_trans:server_cancel(SipMsg)
+                 end
+         end,
+         fun(SipMsg) ->
+                 UAS = make_uas(SipMsg, Trans),
+                 case psip_b2bua:process(UAS) of
+                     ok -> ok;
+                     not_found ->
+                         psip_handler:uas_request(UAS, SipMsg, Handler)
+                 end
+         end],
+    case do_process(Process, SipMsg0) of
         {reply, Resp} ->
             psip_trans:server_response(Resp, Trans);
-        {process, ReqSipMsg1} ->
-            case psip_dialog:uas_request(ReqSipMsg1) of
-                {reply, Resp} ->
-                    psip_trans:server_response(Resp, Trans);
-                process ->
-                    UAS = make_uas(ReqSipMsg1, Trans),
-                    case psip_b2bua:process(UAS) of
-                        ok -> ok;
-                        not_found ->
-                            psip_handler:uas_request(UAS, ReqSipMsg1, Handler)
-                    end
-            end
+        _ ->
+            ok
     end.
 
 -spec process_ack(ersip_sipmsg:sipmsg(), psip_handler:handler()) -> ok.
@@ -63,6 +85,12 @@ process_ack(ReqSipMsg, Handler) ->
             psip_log:warning("uas: cannot find dialog for ACK", []),
             ok
     end.
+
+-spec process_cancel(psip_trans:trans(), psip_handler:handler()) -> ok.
+process_cancel(Trans, Handler) ->
+    Id = {uas_id, Trans},
+    %% TODO: in-dialog CANCEL?
+    psip_handler:uas_cancel(Id, Handler).
 
 -spec response(ersip_sipmsg:sipmsg(), psip_trans:trans()) -> ok.
 response(RespSipMsg0, #uas{trans = Trans, req = ReqSipMsg}) ->
@@ -101,3 +129,18 @@ check_scheme(<<"sip">>) -> true;
 check_scheme(<<"sips">>) -> true;
 check_scheme(<<"tel">>) -> true;
 check_scheme(_) -> false.
+
+-spec do_process([Fun], ersip_sipmsg:sipmsg())
+                -> ok | {reply, ersip_sipmsg:sipmsg()} when
+      Fun :: fun((ersip_sipmsg:sipmsg())
+                 -> ok  | {process, ersip_sipmsg:ersip_sipmsg()}
+                        | {reply, ersip_sipmsg:ersip_sipmsg()}).
+do_process([], _) ->
+    ok;
+do_process([F | Rest], SipMsg) ->
+    case F(SipMsg) of
+        ok -> ok;
+        {reply, _} = Reply -> Reply;
+        {process, SipMsg1} ->
+            do_process(Rest, SipMsg1)
+    end.

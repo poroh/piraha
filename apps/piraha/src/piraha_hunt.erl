@@ -10,7 +10,8 @@
 -module(piraha_hunt).
 
 -export([start/3,
-         start_link/1
+         start_link/1,
+         cancel/1
         ]).
 
 %% gen_server
@@ -30,7 +31,9 @@
                 fwd_request :: ersip_sipmsg:sipmsg() | undefined,
                 group       :: piraha_group:group(),
                 uac         :: psip_uac:uac(),
-                to_tag      :: ersip_hdr_fromto:tag()
+                to_tag      :: ersip_hdr_fromto:tag(),
+                uac_id      :: psip_uac:id() | undefined,
+                cancelled = false :: boolean()
                }).
 -type state() :: #state{}.
 
@@ -54,6 +57,15 @@ start(UAS, OrigSipMsg, Group) ->
             ok;
         {error, _} = Error ->
             psip_log:error("cannot start hunting process: ~p", [Error])
+    end.
+
+-spec cancel(ersip_uas:id()) -> ok.
+cancel(UASId) ->
+    case gproc:lookup_local_name({?MODULE, UASId}) of
+        Pid when is_pid(Pid) ->
+           gen_server:cast(Pid, cancel);
+        undefined ->
+            not_found
     end.
 
 %%===================================================================
@@ -95,6 +107,8 @@ init([UAS, ReqSipMsg, Group]) ->
                    group = Group,
                    to_tag = {tag, ersip_id:token(crypto:strong_rand_bytes(8))}
                   },
+    UASId = psip_uas:id(UAS),
+    gproc:add_local_name({?MODULE, UASId}),
     gen_server:cast(self(), start_hunt),
     {ok, State}.
 
@@ -108,6 +122,11 @@ handle_cast(start_hunt, #state{request = Req} = State) ->
     psip_log:debug("piraha hunt: forward request template: ~n~s", [ersip_sipmsg:serialize(FwdReq)]),
     gen_server:cast(self(), hunt_next),
     {noreply, NewState};
+handle_cast(hunt_next, #state{cancelled = true} = State) ->
+    psip_log:info("piraha hunt: stop because cancel", []),
+    OutResp = ersip_sipmsg:reply(487, State#state.request),
+    psip_uas:response(OutResp, State#state.uas),
+    {stop, normal, State};
 handle_cast(hunt_next, #state{} = State) ->
     case piraha_group:next(State#state.group) of
         not_found ->
@@ -124,8 +143,8 @@ handle_cast(hunt_next, #state{} = State) ->
                            ({stop, _}) -> ok;
                            ({message, Resp})    -> gen_server:cast(Self, {response, Resp})
                         end,
-            psip_uac:request(SipMsgToSend, Nexthop, ResultFun),
-            {noreply, State#state{group = Group1}}
+            UACId = psip_uac:request(SipMsgToSend, Nexthop, ResultFun),
+            {noreply, State#state{group = Group1, uac_id = UACId}}
     end;
 handle_cast({response, Resp}, #state{} = State) ->
     case ersip_sipmsg:status(Resp) of
@@ -153,6 +172,17 @@ handle_cast({response, Resp}, #state{} = State) ->
             gen_server:cast(self(), hunt_next),
             {noreply, State}
     end;
+handle_cast(cancel, #state{cancelled = false, uac_id = undefined} = State) ->
+    psip_log:info("piraha hunt: cancel: no active request just set flag", []),
+    NewState = State#state{cancelled = true},
+    {noreply, NewState};
+handle_cast(cancel, #state{cancelled = false, uac_id = UACId} = State) ->
+    psip_log:info("piraha hunt: cancel: trying to cancel request with id: ~p", [UACId]),
+    NewState = State#state{cancelled = true},
+    psip_uac:cancel(NewState#state.uac_id),
+    {noreply, NewState};
+handle_cast(cancel, #state{cancelled = true} = State) ->
+    {noreply, State};
 handle_cast(Request, State) ->
     psip_log:error("piraha hunt: unexpected cast: ~p", [Request]),
     {noreply, State}.

@@ -14,8 +14,10 @@
 -export([start_link/1,
          server_process/2,
          server_response/2,
+         server_cancel/1,
          client_new/2,
-         client_response/2]).
+         client_response/2,
+         client_cancel/1]).
 
 %% gen_server
 -export([init/1,
@@ -92,13 +94,29 @@ server_process(Msg, Handler) ->
 server_response(Resp, {trans, Pid}) ->
     gen_server:cast(Pid, {send, Resp}).
 
--spec client_new(ersip_request:request(), client_callback()) -> ok.
+-spec server_cancel(ersip_sipmsg:sipmsg()) -> {reply, ersip_sipmsg:sipmsg()}.
+server_cancel(CancelSipMsg) ->
+    TransId = ersip_trans:server_cancel_id(CancelSipMsg),
+    case gproc:lookup_local_name(TransId) of
+        Pid when is_pid(Pid) ->
+            gen_server:cast(Pid, cancel),
+            Resp = ersip_sipmsg:reply(200, CancelSipMsg),
+            {reply, Resp};
+        _ ->
+            psip_log:info("Cannot find transaction to CANCEL: ~p", []),
+            Resp = ersip_sipmsg:reply(481, CancelSipMsg),
+            {reply, Resp}
+    end.
+
+-spec client_new(ersip_request:request(), client_callback()) -> trans().
 client_new(OutReq, Callback) ->
     Args = [client, OutReq, Callback],
     case psip_trans_sup:start_child([Args]) of
-        {ok, _} -> ok;
+        {ok, Pid} ->
+            {trans, Pid};
         {error, _} = Error ->
-            psip_log:error("failed to create transaction: ~p", [Error])
+            psip_log:error("failed to create transaction: ~p", [Error]),
+            {trans, spawn(fun() -> ok end)}
     end.
 
 -spec client_response(ersip_hdr_via:via(), ersip_msg:message()) -> ok.
@@ -116,6 +134,9 @@ client_response(Via, Msg) ->
             psip_log:warning("Failed to parse response: ~p", [Error])
     end.
 
+-spec client_cancel(trans()) -> ok.
+client_cancel({trans, Pid}) ->
+    gen_server:cast(Pid, cancel).
 
 %%===================================================================
 %% gen_server callbacks
@@ -193,6 +214,16 @@ handle_cast({send, _} = Ev, #state{trans = Trans} = State) ->
         stop ->
             {stop, normal, NewState}
     end;
+handle_cast(cancel, #state{data = #server{handler = Handler}} = State) ->
+    psip_log:debug("psip trans: canceling server transaction", []),
+    psip_uas:process_cancel(make_trans(), Handler),
+    {noreply, State};
+handle_cast(cancel, #state{data = #client{} = Data} = State) ->
+    psip_log:debug("psip trans: canceling client transaction", []),
+    #client{outreq = OutReq} = Data,
+    CancelReq = ersip_request_cancel:generate(OutReq),
+    client_new(CancelReq, fun(_) -> ok end),
+    {noreply, State};
 handle_cast({received, _} = Ev, #state{trans = Trans} = State) ->
     psip_log:debug("psip trans: received message", []),
     {NewTrans, SE} = ersip_trans:event(Ev, Trans),

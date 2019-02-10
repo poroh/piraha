@@ -13,7 +13,8 @@
 -export([transp_request/2,
          transaction/3,
          transaction_stop/3,
-         uas_request/3
+         uas_request/3,
+         uas_cancel/2
         ]).
 
 %%===================================================================
@@ -57,6 +58,10 @@ uas_request(UAS, ReqSipMsg0, _) ->
                     psip_uas:response(NotFoundResp, UAS)
             end
     end.
+
+-spec uas_cancel(psip_uas:id(), any()) -> ok.
+uas_cancel(UASId, _) ->
+    piraha_hunt:cancel(UASId).
 
 -spec transaction_stop(psip_trans:trans(), ersip_sipmsg:sipmsg(), any()) -> ok.
 transaction_stop(Trans, Reason, _) ->

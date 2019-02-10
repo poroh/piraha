@@ -13,7 +13,8 @@
          transp_request/2,
          transaction/3,
          transaction_stop/3,
-         uas_request/3
+         uas_request/3,
+         uas_cancel/2
         ]).
 
 -export_type([handler/0,
@@ -56,3 +57,7 @@ transaction_stop(Trans, TransResult, #handler{module = Mod, args = Args}) ->
 -spec uas_request(psip_uas:uas(), ersip_sipmsg:sipmsg(), handler()) -> ok.
 uas_request(UAS, ReqSipMsg, #handler{module = Mod, args = Args}) ->
     Mod:uas_request(UAS, ReqSipMsg, Args).
+
+-spec uas_cancel(psip_uas:id(), handler()) -> ok.
+uas_cancel(UASId, #handler{module = Mod, args = Args}) ->
+    Mod:uas_cancel(UASId, Args).
