@@ -147,8 +147,20 @@ handle_cast({send_request, OutReq}, State) ->
                        end,
                 {ersip_host:ip_address(Host), Port};
             false ->
-                psip_log:warning("psip udp port: sending to DNS name is not supported yet", []),
-                {{240, 0, 0, 1}, 5060}
+                case ersip_uri:port(NextHop) of
+                    undefined ->
+                        psip_log:warning("psip udp port: srv DNS lookup is not supported yet", []),
+                        {{240, 0, 0, 1}, 5060};
+                    Port ->
+                        HostStr = binary_to_list(ersip_host:assemble_bin(Host)),
+                        case inet_res:lookup(HostStr, in, a) of
+                            [IP | _Rest] ->
+                                {IP, Port};
+                            [] ->
+                                psip_log:warning("psip udp port: DNS lookup failed: ~s", [HostStr]),
+                                {{240, 0, 0, 1}, 5060}
+                        end
+                end
         end,
     Conn = ersip_conn:new(State#state.local_ip,
                           State#state.local_port,
