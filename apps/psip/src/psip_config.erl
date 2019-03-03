@@ -15,6 +15,9 @@
          exposed_port/0
         ]).
 
+-define(ENV_VAR_EXPOSED_ADDR, "EXPOSED_ADDR").
+-define(ENV_VAR_EXPOSED_PORT, "EXPOSED_PORT").
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -40,11 +43,32 @@ listen_port() ->
 
 -spec exposed_address() -> inet:ip_address().
 exposed_address() ->
-    application:get_env(psip, exposed_address, listen_address()).
+    ExposedCfgAddr = application:get_env(psip, exposed_address, listen_address()),
+    case os:getenv(?ENV_VAR_EXPOSED_ADDR) of
+        false -> ExposedCfgAddr;
+        AddrStr ->
+            case inet:parse_address(AddrStr) of
+                {ok, Addr} -> Addr;
+                {error, _} ->
+                    psip_log:warning("Environment: failed to parse ~s: ~p", [?ENV_VAR_EXPOSED_ADDR, AddrStr]),
+                    ExposedCfgAddr
+            end
+    end.
 
 -spec exposed_port() -> inet:port_number().
 exposed_port() ->
-    application:get_env(psip, exposed_port, listen_port()).
+    ExposedCfgPort = application:get_env(psip, exposed_port, listen_port()),
+    case os:getenv(?ENV_VAR_EXPOSED_PORT) of
+        false -> ExposedCfgPort;
+        PortStr ->
+            case catch list_to_integer(PortStr) of
+                Port when is_integer(Port), Port >= 0, Port =< 65535 ->
+                    Port;
+                _ ->
+                    psip_log:warning("Environment: failed to parse ~s: ~p", [?ENV_VAR_EXPOSED_PORT, PortStr]),
+                    ExposedCfgPort
+            end
+    end.
 
 %%%===================================================================
 %%% Internal implementation
