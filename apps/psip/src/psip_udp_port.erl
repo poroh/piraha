@@ -102,13 +102,16 @@ init([]) ->
     IPAddress = psip_config:listen_address(),
     Port = psip_config:listen_port(),
     psip_log:notice("psip udp port: starting at ~s:~p", [inet:ntoa(IPAddress), Port]),
+    ExposedIP = psip_config:exposed_address(),
+    ExposedPort = psip_config:exposed_port(),
+    psip_log:notice("psip udp port: using ~s:~p as external address", [inet:ntoa(ExposedIP), ExposedPort]),
     case gen_udp:open(Port, [binary, {ip, IPAddress}, {active, once}]) of
         {error, _} = Error ->
             psip_log:error("psip udp port: failed to open port: ~p", [Error]),
             {stop, Error};
         {ok, Socket} ->
-            State = #state{local_ip = IPAddress,
-                           local_port = Port,
+            State = #state{local_ip = ExposedIP,
+                           local_port = ExposedPort,
                            socket = Socket},
             {ok, State}
     end.
