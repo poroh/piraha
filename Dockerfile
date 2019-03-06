@@ -14,7 +14,7 @@ ENV PATH=/buildroot/rebar3/bin:$PATH
 WORKDIR /buildroot
 
 # Copy our Erlang test application
-COPY piraha piraha
+COPY . piraha
 
 # And build the release
 WORKDIR piraha
