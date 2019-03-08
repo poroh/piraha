@@ -127,7 +127,8 @@ handle_cast(hunt_next, #state{cancelled = true} = State) ->
     OutResp = ersip_sipmsg:reply(487, State#state.request),
     psip_uas:response(OutResp, State#state.uas),
     {stop, normal, State};
-handle_cast(hunt_next, #state{} = State) ->
+handle_cast(hunt_next, #state{} = State0) ->
+    State = State0#state{to_tag = {tag, ersip_id:token(crypto:strong_rand_bytes(8))}},
     case piraha_group:next(State#state.group) of
         not_found ->
             psip_log:warning("piraha hunt: cannot find next target: give up", []),
